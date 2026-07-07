@@ -6,7 +6,7 @@ import json
 from fastapi import APIRouter, Form, HTTPException, UploadFile
 
 from .. import auth, srs
-from ..analysis import analyze_attempt, get_target_analysis
+from ..analysis import analyze_attempt, ensure_accent_estimate, get_target_analysis
 from ..config import ATTEMPTS_DIR
 from ..db import get_conn, now, row_to_dict, tx
 
@@ -29,14 +29,15 @@ def _load_item(item_id: int, user_id: int) -> dict:
 @router.get("/items/{item_id}")
 def item_detail(item_id: int, user: dict = auth.CurrentUser):
     item = _load_item(item_id, user["id"])
+    item["accent"] = ensure_accent_estimate(item, item["language"])
     targets = {}
     for mode in ("sentence", "word"):
         t = get_target_analysis(item, mode)
         if t:
             targets[mode] = t
-    srs_row = get_conn().execute(
+    srs_rows = get_conn().execute(
         "SELECT * FROM srs_state WHERE item_id=? AND user_id=?", (item_id, user["id"])
-    ).fetchone()
+    ).fetchall()
     return {
         "id": item["id"],
         "deck_id": item["deck_id"],
@@ -49,7 +50,7 @@ def item_detail(item_id: int, user: dict = auth.CurrentUser):
         "word_audio": item["word_audio"],
         "accent": item["accent"],
         "targets": targets,
-        "srs": dict(srs_row) if srs_row else None,
+        "srs": {r["mode"]: dict(r) for r in srs_rows},
     }
 
 
@@ -84,7 +85,7 @@ def submit_attempt(item_id: int, audio: UploadFile, mode: str = Form("sentence")
     with tx() as conn:
         conn.execute("UPDATE attempts SET audio_path=? WHERE id=?", (str(audio_path.name), attempt_id))
 
-    schedule = srs.record_result(user["id"], item_id, result["score"])
+    schedule = srs.record_result(user["id"], item_id, mode, result["score"])
     return {"attempt_id": attempt_id, "result": result, "srs": schedule}
 
 
@@ -103,7 +104,7 @@ def attempt_history(item_id: int, user: dict = auth.CurrentUser):
 def review_queue(user: dict = auth.CurrentUser):
     rows = get_conn().execute(
         """SELECT i.id, i.expression, i.reading, i.sentence, i.accent_json, d.name AS deck_name,
-                  d.language, s.due_at, s.interval_days, s.reps, s.last_score
+                  d.language, s.mode, s.due_at, s.interval_days, s.reps, s.last_score
            FROM srs_state s
            JOIN items i ON i.id = s.item_id
            JOIN decks d ON d.id = i.deck_id

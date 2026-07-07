@@ -31,18 +31,38 @@ SOUND_RE = re.compile(r"\[sound:([^\]]+)\]")
 TAG_RE = re.compile(r"<[^>]+>")
 FURIGANA_RE = re.compile(r" ?([^ >\[\]]+)\[([^\]]+)\]")  # anki furigana syntax 漢字[かんじ]
 
-# Candidate field names, in priority order, lowercased.
+# Candidate field names, in priority order. Note-type field names are
+# normalized (lowercased, separators stripped) before matching, so
+# "Sentence Audio", "sentence-audio" and "SentenceAudio" all match
+# "sentenceaudio". Covers Lapis, JPMN, Kaishi, Core2k-style and Yomitan
+# exports plus Japanese-named fields.
 FIELD_CANDIDATES: dict[str, list[str]] = {
-    "expression": ["expression", "word", "target", "vocab", "vocabword", "front", "key"],
-    "reading": ["expressionreading", "reading", "wordreading", "vocabreading", "kana"],
-    "expression_furigana": ["expressionfurigana", "furigana", "vocabfurigana"],
-    "sentence": ["sentence", "example", "examplesentence", "expression2", "context"],
-    "sentence_furigana": ["sentencefurigana", "sentencereading"],
-    "sentence_audio": ["sentenceaudio", "sentencesound", "audioonfront", "audio_sentence"],
-    "word_audio": ["expressionaudio", "wordaudio", "vocabaudio", "audio", "sound"],
-    "pitch_position": ["pitchposition", "pitchnumber", "accentposition", "pitch"],
-    "pitch_categories": ["pitchcategories", "pitchcategory", "accentcategory"],
+    "expression": ["expression", "word", "target", "targetword", "vocab", "vocabword",
+                   "vocabulary", "term", "front", "key", "単語", "語彙", "表現"],
+    "reading": ["expressionreading", "reading", "wordreading", "vocabreading",
+                "vocabularyreading", "termreading", "vocabkana", "kana", "yomi",
+                "読み", "よみ", "読み方"],
+    "expression_furigana": ["expressionfurigana", "furigana", "vocabfurigana",
+                            "wordfurigana", "termfurigana"],
+    "sentence": ["sentence", "example", "examplesentence", "expression2", "context",
+                 "sentencekanji", "例文", "文"],
+    "sentence_furigana": ["sentencefurigana", "sentencereading", "sentencewithfurigana"],
+    "sentence_audio": ["sentenceaudio", "sentencesound", "audiosentence", "sentaudio",
+                       "exampleaudio", "contextaudio", "audioonfront", "例文音声", "文音声"],
+    "word_audio": ["expressionaudio", "wordaudio", "vocabaudio", "vocabularyaudio",
+                   "termaudio", "audioword", "wordsound", "expressionsound", "audio",
+                   "sound", "単語音声", "音声"],
+    "pitch_position": ["pitchposition", "pitchnumber", "accentposition", "pitchaccent",
+                       "pitch", "accent", "ピッチ", "アクセント"],
+    "pitch_categories": ["pitchcategories", "pitchcategory", "accentcategory", "pitchtype"],
 }
+
+# separators people put in field names; stripped before matching
+_FIELD_NORM_RE = re.compile(r"[\s_\-:：·.·/\\()（）\[\]'\"]+")
+
+
+def _normalize_field_name(name: str) -> str:
+    return _FIELD_NORM_RE.sub("", name.lower())
 
 
 @dataclass
@@ -227,12 +247,12 @@ def _load_notetype_fields(conn: sqlite3.Connection) -> dict[int, list[str]]:
 
 def _build_field_index(field_names: list[str]) -> dict[str, int]:
     """Map our canonical roles to field ordinals for one notetype."""
-    lower = [fn.lower().replace(" ", "") for fn in field_names]
+    norm = [_normalize_field_name(fn) for fn in field_names]
     mapping: dict[str, int] = {}
     for role, candidates in FIELD_CANDIDATES.items():
         for cand in candidates:
-            if cand in lower:
-                idx = lower.index(cand)
+            if cand in norm:
+                idx = norm.index(cand)
                 if idx not in mapping.values():
                     mapping[role] = idx
                     break
@@ -280,8 +300,8 @@ def parse_apkg(path: str | Path, deck_name: str | None = None) -> tuple[ParsedDe
 
             if not expression and not sentence_plain:
                 continue
-            # skip placeholder/setup notes
-            if "placeholder" in fields_list[min(5, len(fields_list) - 1)].lower():
+            # skip template/setup notes some shared decks ship with
+            if "placeholder" in expression.lower() or "placeholder" in sentence_plain.lower():
                 continue
 
             note = ParsedNote(

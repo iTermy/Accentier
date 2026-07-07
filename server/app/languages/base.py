@@ -32,6 +32,13 @@ class LanguageModule(ABC):
         """Human-readable coaching notes derived from alignment metrics."""
         return []
 
+    def estimate_accent_from_audio(self, analysis: dict, accent: dict) -> dict | None:
+        """Best-effort accent guess from the target audio's own F0 track,
+        for items the dictionaries don't cover. `analysis` is yin_f0 output.
+        Return accent_json field updates (accent/pattern/category/...) or
+        None if the audio is inconclusive."""
+        return None
+
 
 _REGISTRY: dict[str, LanguageModule] = {}
 

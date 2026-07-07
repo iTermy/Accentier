@@ -127,14 +127,20 @@ def deck_items(deck_id: int, user: dict = auth.CurrentUser):
     rows = get_conn().execute(
         """SELECT i.id, i.expression, i.reading, i.sentence, i.sentence_audio, i.word_audio,
                   i.accent_json,
-                  s.due_at, s.interval_days, s.reps, s.last_score,
+                  (SELECT MIN(s.due_at) FROM srs_state s
+                    WHERE s.item_id = i.id AND s.user_id = ?) AS due_at,
+                  (SELECT s.interval_days FROM srs_state s
+                    WHERE s.item_id = i.id AND s.user_id = ? ORDER BY s.due_at LIMIT 1) AS interval_days,
+                  (SELECT MAX(s.reps) FROM srs_state s
+                    WHERE s.item_id = i.id AND s.user_id = ?) AS reps,
+                  (SELECT s.last_score FROM srs_state s
+                    WHERE s.item_id = i.id AND s.user_id = ? ORDER BY s.due_at LIMIT 1) AS last_score,
                   (SELECT COUNT(*) FROM attempts a WHERE a.item_id = i.id AND a.user_id = ?) AS attempt_count,
                   (SELECT MAX(a.score) FROM attempts a WHERE a.item_id = i.id AND a.user_id = ?) AS best_score
            FROM items i
-           LEFT JOIN srs_state s ON s.item_id = i.id AND s.user_id = ?
            WHERE i.deck_id = ?
            ORDER BY i.id""",
-        (user["id"], user["id"], user["id"], deck_id),
+        (user["id"], user["id"], user["id"], user["id"], user["id"], user["id"], deck_id),
     ).fetchall()
     return {"deck": dict(deck), "items": [row_to_dict(r, ("accent_json",)) for r in rows]}
 

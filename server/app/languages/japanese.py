@@ -23,6 +23,10 @@ import re
 from functools import lru_cache
 from typing import Any
 
+import numpy as np
+
+from ..alignment import align_moras
+from ..dsp.yin import semitone_contour, smooth_semitones
 from ..kanjium import get_kanjium, hira_to_kata, kata_to_hira
 from .base import LanguageModule, register
 
@@ -116,6 +120,51 @@ def tokenize_sentence(sentence: str) -> list[dict]:
     return words
 
 
+def estimate_accent(analysis: dict, moras: list[str]) -> int | None:
+    """Guess the accent number by reading the word audio's own melody.
+
+    Split the speech portion into even mora bins, take each bin's mean
+    pitch, and look for the downstep. Caveats inherent to the method:
+    heiban [0] and odaka [n] are indistinguishable for a word in isolation
+    (the odaka drop happens on a following particle), so "no drop" maps to
+    0. Results are labeled as estimates in the UI.
+    """
+    n = len(moras)
+    if n == 0:
+        return None
+    st, _ = semitone_contour(analysis["f0"])
+    sm = smooth_semitones(analysis["times"], st)
+    spans = align_moras(analysis["times"], analysis["rms"], moras)
+    if not spans:
+        return None
+    times = analysis["times"]
+    means: list[float] = []
+    for sp in spans:
+        mask = (times >= sp["start"]) & (times <= sp["end"]) & ~np.isnan(sm)
+        means.append(float(np.mean(sm[mask])) if int(mask.sum()) >= 2 else np.nan)
+
+    known = [(i, m) for i, m in enumerate(means) if not np.isnan(m)]
+    if len(known) < max(2, (n + 1) // 2):
+        # a one-mora word: judge by the fall within the vowel
+        if n == 1 and known:
+            voiced = sm[~np.isnan(sm)]
+            if len(voiced) >= 4:
+                return 1 if voiced[: len(voiced) // 3].mean() - voiced[-len(voiced) // 3:].mean() > 2.0 else 0
+        return None
+
+    # largest downstep between consecutive measured moras
+    drop_after: int | None = None
+    drop_size = 0.0
+    for (i, a), (j, b) in zip(known, known[1:]):
+        step = b - a
+        if step < drop_size:
+            drop_size = step
+            drop_after = i + 1  # accent number is 1-indexed mora before the drop
+    if drop_after is not None and drop_size <= -1.5:
+        return min(drop_after, n)
+    return 0
+
+
 class JapaneseModule(LanguageModule):
     id = "ja"
     name = "Japanese (pitch accent)"
@@ -144,6 +193,18 @@ class JapaneseModule(LanguageModule):
         if note.sentence:
             data["sentence_words"] = tokenize_sentence(note.sentence)
         return data
+
+    def estimate_accent_from_audio(self, analysis: dict, accent: dict) -> dict | None:
+        moras = accent.get("moras") or []
+        est = estimate_accent(analysis, moras)
+        if est is None:
+            return None
+        return {
+            "accent": est,
+            "accent_source": "audio",
+            "pattern": accent_to_pattern(len(moras), est),
+            "category": categorize(est, len(moras)),
+        }
 
     def score_weights(self) -> dict[str, float]:
         # Pitch *shape* and drop placement dominate for Japanese.

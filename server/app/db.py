@@ -57,15 +57,47 @@ CREATE INDEX IF NOT EXISTS idx_attempts_item ON attempts(item_id, user_id);
 CREATE TABLE IF NOT EXISTS srs_state (
     item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
     user_id INTEGER NOT NULL REFERENCES users(id),
+    mode TEXT NOT NULL DEFAULT 'sentence',   -- sentence and word shadowing schedule separately
     due_at REAL NOT NULL,
     interval_days REAL NOT NULL DEFAULT 0,
     ease REAL NOT NULL DEFAULT 2.5,
     reps INTEGER NOT NULL DEFAULT 0,
     lapses INTEGER NOT NULL DEFAULT 0,
     last_score REAL,
-    PRIMARY KEY (item_id, user_id)
+    PRIMARY KEY (item_id, user_id, mode)
 );
 """
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """In-place upgrades for databases created by earlier versions."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(srs_state)")}
+    if cols and "mode" not in cols:
+        # per-mode scheduling: backfill mode from each item's latest attempt
+        conn.executescript("""
+            ALTER TABLE srs_state RENAME TO srs_state_v1;
+            CREATE TABLE srs_state (
+                item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                mode TEXT NOT NULL DEFAULT 'sentence',
+                due_at REAL NOT NULL,
+                interval_days REAL NOT NULL DEFAULT 0,
+                ease REAL NOT NULL DEFAULT 2.5,
+                reps INTEGER NOT NULL DEFAULT 0,
+                lapses INTEGER NOT NULL DEFAULT 0,
+                last_score REAL,
+                PRIMARY KEY (item_id, user_id, mode)
+            );
+            INSERT INTO srs_state (item_id, user_id, mode, due_at, interval_days, ease, reps, lapses, last_score)
+                SELECT s.item_id, s.user_id,
+                       COALESCE((SELECT a.mode FROM attempts a
+                                  WHERE a.item_id = s.item_id AND a.user_id = s.user_id
+                                  ORDER BY a.created_at DESC LIMIT 1), 'sentence'),
+                       s.due_at, s.interval_days, s.ease, s.reps, s.lapses, s.last_score
+                FROM srs_state_v1 s;
+            DROP TABLE srs_state_v1;
+        """)
+        conn.commit()
 
 
 def get_conn() -> sqlite3.Connection:
@@ -80,8 +112,10 @@ def get_conn() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    get_conn().executescript(SCHEMA)
-    get_conn().commit()
+    conn = get_conn()
+    _migrate(conn)
+    conn.executescript(SCHEMA)
+    conn.commit()
 
 
 @contextmanager

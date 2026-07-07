@@ -6,12 +6,16 @@ from pathlib import Path
 
 import numpy as np
 
+from .alignment import align_moras, align_words
 from .audio import decode_audio
 from .config import MEDIA_DIR
 from .db import get_conn, tx
 from .dsp.align import compare_contours, pack_contour
-from .dsp.yin import semitone_contour, yin_f0
+from .dsp.yin import semitone_contour, smooth_semitones, yin_f0
 from .languages.base import get_module
+
+# bump when the target payload format/DSP changes; stale caches regenerate
+TARGET_VERSION = 2
 
 
 def media_path(deck_id: int, filename: str) -> Path:
@@ -28,7 +32,7 @@ def _analyze_file(path: Path) -> dict | None:
 def get_target_analysis(item: dict, mode: str = "sentence") -> dict | None:
     """Compute (or load cached) target contour for an item + mode."""
     cached = item.get("target") or {}
-    if mode in cached:
+    if mode in cached and cached[mode].get("v") == TARGET_VERSION:
         return cached[mode]
 
     filename = item["sentence_audio"] if mode == "sentence" else item["word_audio"]
@@ -38,15 +42,52 @@ def get_target_analysis(item: dict, mode: str = "sentence") -> dict | None:
     if analysis is None:
         return None
     st, ref = semitone_contour(analysis["f0"])
+    display = smooth_semitones(analysis["times"], st)
     payload = {
-        "contour": pack_contour(analysis["times"], st),
+        "v": TARGET_VERSION,
+        "contour": pack_contour(analysis["times"], display),
         "ref_hz": round(ref, 1),
         "duration": round(analysis["duration"], 3),
     }
+
+    # estimated word/mora time spans so the chart can label the melody
+    accent = item.get("accent") or {}
+    if mode == "sentence" and accent.get("sentence_words"):
+        spans = align_words(analysis["times"], analysis["rms"], accent["sentence_words"])
+        if spans:
+            payload["words"] = spans
+    elif mode == "word" and accent.get("moras"):
+        spans = align_moras(analysis["times"], analysis["rms"], accent["moras"])
+        if spans:
+            payload["moras"] = spans
+
     cached[mode] = payload
     with tx() as conn:
         conn.execute("UPDATE items SET target_json=? WHERE id=?", (json.dumps(cached), item["id"]))
     return payload
+
+
+def ensure_accent_estimate(item: dict, language: str) -> dict | None:
+    """For items without dictionary accent data, try estimating the accent
+    from the word audio itself (cached in accent_json; negative results too,
+    so the audio is only analyzed once). Returns the updated accent dict."""
+    accent = item.get("accent")
+    if accent is None or accent.get("accent") is not None or accent.get("estimate_failed"):
+        return accent
+    if not item.get("word_audio") or not accent.get("moras"):
+        return accent
+
+    module = get_module(language)
+    analysis = _analyze_file(media_path(item["deck_id"], item["word_audio"]))
+    updates = module.estimate_accent_from_audio(analysis, accent) if analysis else None
+    if updates is None:
+        accent["estimate_failed"] = True
+    else:
+        accent.update(updates)
+    with tx() as conn:
+        conn.execute("UPDATE items SET accent_json=? WHERE id=?",
+                     (json.dumps(accent, ensure_ascii=False), item["id"]))
+    return accent
 
 
 def analyze_attempt(item: dict, language: str, user_audio: bytes, mode: str) -> dict:

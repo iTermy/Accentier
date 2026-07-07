@@ -22,18 +22,16 @@ from __future__ import annotations
 
 import numpy as np
 
-from .yin import semitone_contour
+from .yin import semitone_contour, smooth_semitones
 
 DIVERGENCE_ST = 2.8          # semitone deviation that counts as "off"
 SLOPE_EPS = 8.0              # st/sec below which slope counts as flat
 
 
 def _voiced_series(times: np.ndarray, st: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    mask = ~np.isnan(st)
-    t, v = times[mask], st[mask]
-    if len(v) >= 5:
-        kernel = np.ones(3) / 3
-        v = np.convolve(v, kernel, mode="same")
+    smoothed = smooth_semitones(times, st, window=7)
+    mask = ~np.isnan(smoothed)
+    t, v = times[mask], smoothed[mask]
     slope = np.gradient(v, t) if len(v) >= 3 else np.zeros_like(v)
     return t, v, np.clip(slope, -60, 60)
 
@@ -80,7 +78,7 @@ def compare_contours(target: dict, user: dict, weights: dict[str, float]) -> dic
         metrics = {"shape": 0.0, "direction": 0.0, "level": 0.0, "timing": 0.0,
                    "duration_ratio": 0.0, "no_voice": True}
         result.update({"metrics": metrics, "score": 0.0, "divergences": [],
-                       "aligned_user": [], "user_contour": _pack(ut, uv)})
+                       "aligned_user": [], "user_contour": _pack(ut, uv), "warp": []})
         return result
 
     # cost matrix: level + slope-direction agreement
@@ -153,12 +151,18 @@ def compare_contours(target: dict, user: dict, weights: dict[str, float]) -> dic
     # user contour warped onto the target timeline for direct overlay
     aligned_user = _pack(tt[ti], uv[ui])
 
+    # sparse user_time -> target_time mapping so the frontend can move a
+    # playhead over the overlay chart while the user's own take plays back
+    warp = [[round(float(ut[ui[k]]), 3), round(float(tt[ti[k]]), 3)]
+            for k in range(0, len(path), 3)]
+
     result.update({
         "metrics": metrics,
         "score": round(score, 1),
         "divergences": divergences,
         "aligned_user": aligned_user,
         "user_contour": _pack(ut, uv),
+        "warp": warp,
     })
     return result
 

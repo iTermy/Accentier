@@ -9,6 +9,10 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Japanese in test output vs Windows cp1252 console
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 # isolate data dir BEFORE importing the app
 _tmp = tempfile.mkdtemp(prefix="accentier_test_")
 os.environ["ACCENTIER_TEST"] = "1"
