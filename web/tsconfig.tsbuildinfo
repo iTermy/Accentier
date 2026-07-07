@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/recorder.ts","./src/components/contourchart.tsx","./src/components/pitchdiagram.tsx","./src/components/practicecore.tsx","./src/components/scorering.tsx","./src/pages/authpage.tsx","./src/pages/dashboard.tsx","./src/pages/deckpage.tsx","./src/pages/practicepage.tsx","./src/pages/reviewpage.tsx"],"version":"5.9.3"}
