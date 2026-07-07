@@ -84,7 +84,12 @@ export function WordPitchDiagram({ accent }: { accent: AccentData }) {
         {accent.accent_source && (
           <span style={{ opacity: 0.7 }}>
             {" "}
-            · source: {accent.accent_source === "deck" ? "your deck (Yomitan)" : "Kanjium"}
+            · source:{" "}
+            {accent.accent_source === "deck"
+              ? "your deck (Yomitan)"
+              : accent.accent_source === "kanjium"
+              ? "Kanjium"
+              : "estimated from the native audio"}
           </span>
         )}
       </div>

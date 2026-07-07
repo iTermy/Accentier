@@ -3,12 +3,45 @@ import { useNavigate, useParams } from "react-router-dom";
 import { ItemSummary, api } from "../api";
 
 type Filter = "all" | "unpracticed" | "practiced" | "due";
+type AccentFilter = "any" | "heiban" | "atamadaka" | "nakadaka" | "odaka" | "unknown";
+type SortKey = "order" | "length" | "accent" | "best" | "due" | "attempts";
+type StudyOrder = "start" | "end" | "shuffle";
+
+const SORT_LABELS: Record<SortKey, string> = {
+  order: "deck order",
+  length: "length",
+  accent: "accent number",
+  best: "best score",
+  due: "due soonest",
+  attempts: "most practiced",
+};
+
+function categoryOf(i: ItemSummary): AccentFilter {
+  const a = i.accent;
+  if (!a || a.accent === null || a.accent === undefined) return "unknown";
+  if (a.category === "heiban" || a.category === "atamadaka" || a.category === "nakadaka" || a.category === "odaka")
+    return a.category;
+  // derive when category missing
+  const n = a.moras?.length ?? 0;
+  if (a.accent === 0) return "heiban";
+  if (a.accent === 1) return "atamadaka";
+  if (n && a.accent >= n) return "odaka";
+  return "nakadaka";
+}
+
+function lengthOf(i: ItemSummary): number {
+  return i.accent?.moras?.length || i.reading?.length || i.expression.length;
+}
 
 export default function DeckPage() {
   const { deckId } = useParams();
   const [data, setData] = useState<{ deck: any; items: ItemSummary[] } | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
+  const [accentFilter, setAccentFilter] = useState<AccentFilter>("any");
+  const [sortKey, setSortKey] = useState<SortKey>("order");
+  const [sortDesc, setSortDesc] = useState(false);
   const [search, setSearch] = useState("");
+  const [studyOrder, setStudyOrder] = useState<StudyOrder>("start");
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -22,6 +55,7 @@ export default function DeckPage() {
     if (filter === "unpracticed") list = list.filter((i) => !i.attempt_count);
     if (filter === "practiced") list = list.filter((i) => i.attempt_count > 0);
     if (filter === "due") list = list.filter((i) => i.due_at !== null && i.due_at <= now);
+    if (accentFilter !== "any") list = list.filter((i) => categoryOf(i) === accentFilter);
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       list = list.filter(
@@ -31,8 +65,47 @@ export default function DeckPage() {
           (i.sentence || "").toLowerCase().includes(q)
       );
     }
+    if (sortKey !== "order") {
+      const big = Number.POSITIVE_INFINITY;
+      const val = (i: ItemSummary): number => {
+        switch (sortKey) {
+          case "length":
+            return lengthOf(i);
+          case "accent":
+            return i.accent?.accent ?? big;
+          case "best":
+            return i.best_score ?? -1;
+          case "due":
+            return i.due_at ?? big;
+          case "attempts":
+            return -(i.attempt_count || 0); // "most practiced" ascending = most first
+          default:
+            return 0;
+        }
+      };
+      list = [...list].sort((a, b) => val(a) - val(b) || a.id - b.id);
+    }
+    if (sortDesc) list = [...list].reverse();
     return list;
-  }, [data, filter, search]);
+  }, [data, filter, accentFilter, search, sortKey, sortDesc]);
+
+  const startStudy = () => {
+    let ids = items.map((i) => i.id);
+    if (!ids.length) return;
+    if (studyOrder === "end") ids = [...ids].reverse();
+    if (studyOrder === "shuffle") {
+      ids = [...ids];
+      for (let i = ids.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [ids[i], ids[j]] = [ids[j], ids[i]];
+      }
+    }
+    sessionStorage.setItem(
+      "accentier_study",
+      JSON.stringify({ ids, deckId, deckName: data?.deck?.name || "", pos: 0 })
+    );
+    navigate("/study");
+  };
 
   if (!data) return <span className="spin" />;
   const now = Date.now() / 1000;
@@ -48,6 +121,29 @@ export default function DeckPage() {
             </button>
           ))}
         </div>
+        <select value={accentFilter} onChange={(e) => setAccentFilter(e.target.value as AccentFilter)}>
+          <option value="any">any accent</option>
+          <option value="heiban">heiban [0]</option>
+          <option value="atamadaka">atamadaka [1]</option>
+          <option value="nakadaka">nakadaka</option>
+          <option value="odaka">odaka</option>
+          <option value="unknown">no accent data</option>
+        </select>
+        <select value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)}>
+          {(Object.keys(SORT_LABELS) as SortKey[]).map((k) => (
+            <option key={k} value={k}>
+              sort: {SORT_LABELS[k]}
+            </option>
+          ))}
+        </select>
+        <button
+          className="ghost small"
+          title="Reverse order"
+          onClick={() => setSortDesc(!sortDesc)}
+          style={{ padding: "6px 10px" }}
+        >
+          {sortDesc ? "↓" : "↑"}
+        </button>
         <input
           type="text"
           placeholder="Search…"
@@ -57,6 +153,23 @@ export default function DeckPage() {
         />
         <span className="hint">{items.length} items</span>
       </div>
+
+      <div
+        className="panel"
+        style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "12px 16px", marginBottom: 12 }}
+      >
+        <b>Study these {items.length} items</b>
+        <select value={studyOrder} onChange={(e) => setStudyOrder(e.target.value as StudyOrder)}>
+          <option value="start">from the start</option>
+          <option value="end">from the end</option>
+          <option value="shuffle">shuffled</option>
+        </select>
+        <button className="primary" onClick={startStudy} disabled={!items.length}>
+          Start studying
+        </button>
+        <span className="hint">Goes through every item in the list above, one by one.</span>
+      </div>
+
       <div className="panel" style={{ padding: 0, overflowX: "auto" }}>
         <table className="items">
           <thead>
@@ -76,7 +189,12 @@ export default function DeckPage() {
                 <td className="jp" style={{ color: "var(--ink-2)" }}>{i.reading}</td>
                 <td>
                   {i.accent?.accent !== null && i.accent?.accent !== undefined ? (
-                    <span className="chip accent">[{i.accent.accent}]</span>
+                    <span
+                      className="chip accent"
+                      title={i.accent.accent_source === "audio" ? "estimated from audio" : undefined}
+                    >
+                      [{i.accent.accent}]{i.accent.accent_source === "audio" ? "~" : ""}
+                    </span>
                   ) : (
                     <span className="hint">—</span>
                   )}

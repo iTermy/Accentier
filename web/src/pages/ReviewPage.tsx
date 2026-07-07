@@ -8,6 +8,7 @@ interface QueueItem {
   expression: string;
   reading: string;
   deck_name: string;
+  mode: "sentence" | "word";
   last_score: number | null;
 }
 
@@ -39,22 +40,25 @@ export default function ReviewPage() {
       <div className="panel">
         <h2>Review queue</h2>
         <p className="hint">
-          {queue.length} item{queue.length > 1 ? "s" : ""} due. You'll shadow each one; the score decides
-          when it comes back.
+          {queue.length} review{queue.length > 1 ? "s" : ""} due. You'll shadow each one; the score decides
+          when it comes back. Sentence and word takes are scheduled separately.
         </p>
         <table className="items" style={{ margin: "12px 0" }}>
           <tbody>
-            {queue.slice(0, 12).map((q) => (
-              <tr key={q.id}>
+            {queue.slice(0, 12).map((q, i) => (
+              <tr key={`${q.id}-${q.mode}-${i}`}>
                 <td className="jp" style={{ fontWeight: 600 }}>{q.expression}</td>
                 <td className="jp" style={{ color: "var(--ink-2)" }}>{q.reading}</td>
+                <td>
+                  <span className="chip">{q.mode}</span>
+                </td>
                 <td className="hint">{q.deck_name}</td>
                 <td>{q.last_score !== null && <span className="chip">last {Math.round(q.last_score)}</span>}</td>
               </tr>
             ))}
             {queue.length > 12 && (
               <tr>
-                <td colSpan={4} className="hint">
+                <td colSpan={5} className="hint">
                   … and {queue.length - 12} more
                 </td>
               </tr>
@@ -71,7 +75,7 @@ export default function ReviewPage() {
     return (
       <div className="panel" style={{ textAlign: "center", padding: 48 }}>
         <h2>Review complete 🎉</h2>
-        <p className="hint">{queue.length} items shadowed. Come back when more are due.</p>
+        <p className="hint">{queue.length} reviews shadowed. Come back when more are due.</p>
         <Link to="/">
           <button style={{ marginTop: 8 }}>Back to decks</button>
         </Link>
@@ -83,7 +87,7 @@ export default function ReviewPage() {
     <div>
       <div className="review-banner">
         <span>
-          Review {pos + 1} / {queue.length}
+          Review {pos + 1} / {queue.length} — <span className="chip">{current.mode}</span>
         </span>
         <div style={{ display: "flex", gap: 8 }}>
           <button
@@ -108,7 +112,12 @@ export default function ReviewPage() {
           )}
         </div>
       </div>
-      <PracticeCore key={current.id} itemId={current.id} onScored={() => setScored(true)} />
+      <PracticeCore
+        key={`${current.id}-${current.mode}`}
+        itemId={current.id}
+        initialMode={current.mode}
+        onScored={() => setScored(true)}
+      />
     </div>
   );
 }

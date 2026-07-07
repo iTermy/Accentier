@@ -14,6 +14,7 @@ import Dashboard from "./pages/Dashboard";
 import DeckPage from "./pages/DeckPage";
 import PracticePage from "./pages/PracticePage";
 import ReviewPage from "./pages/ReviewPage";
+import StudyPage from "./pages/StudyPage";
 
 function TopBar({ onLogout }: { onLogout: () => void }) {
   const user = getUser();
@@ -69,6 +70,7 @@ export default function App() {
           <Route path="/deck/:deckId" element={authed ? <DeckPage /> : <Navigate to="/login" />} />
           <Route path="/practice/:itemId" element={authed ? <PracticePage /> : <Navigate to="/login" />} />
           <Route path="/review" element={authed ? <ReviewPage /> : <Navigate to="/login" />} />
+          <Route path="/study" element={authed ? <StudyPage /> : <Navigate to="/login" />} />
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>
       </div>

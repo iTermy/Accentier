@@ -1,6 +1,7 @@
 // The core shadowing loop for one item:
 // listen to native audio -> record yourself -> server analyzes -> overlaid
-// contours + score + coaching notes. Used by both PracticePage and ReviewPage.
+// contours + score + coaching notes. Used by PracticePage, ReviewPage and
+// StudyPage.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, AttemptResult, ItemDetail, api, mediaUrl } from "../api";
 import { Recorder } from "../recorder";
@@ -18,12 +19,16 @@ const SUBSCORE_INFO: [keyof AttemptResult["metrics"], string, string][] = [
   ["timing", "Timing", "matching the native duration"],
 ];
 
+const SEP_GRAPH_KEY = "accentier_separate_graph";
+
 export default function PracticeCore({
   itemId,
+  initialMode,
   onScored,
   footer,
 }: {
   itemId: number;
+  initialMode?: Mode;
   onScored?: (score: number) => void;
   footer?: React.ReactNode;
 }) {
@@ -36,7 +41,11 @@ export default function PracticeCore({
   const [level, setLevel] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const [playhead, setPlayhead] = useState<number | null>(null);
+  const [userPlayhead, setUserPlayhead] = useState<number | null>(null);
   const [userAudioUrl, setUserAudioUrl] = useState<string | null>(null);
+  const [separateUser, setSeparateUser] = useState(
+    () => localStorage.getItem(SEP_GRAPH_KEY) === "1"
+  );
 
   const recorderRef = useRef<Recorder | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -52,13 +61,16 @@ export default function PracticeCore({
     api<ItemDetail>(`/api/items/${itemId}`)
       .then((d) => {
         setItem(d);
-        setMode(d.targets.sentence ? "sentence" : "word");
+        const preferred = initialMode && d.targets[initialMode] ? initialMode : undefined;
+        setMode(preferred ?? (d.targets.sentence ? "sentence" : "word"));
       })
       .catch((e: ApiError) => setError(e.message));
     return () => {
       recorderRef.current?.cancel();
+      stopPlayback();
       cancelAnimationFrame(rafRef.current);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [itemId]);
 
   useEffect(() => {
@@ -70,25 +82,49 @@ export default function PracticeCore({
   const target = item?.targets[mode];
   const audioFile = mode === "sentence" ? item?.sentence_audio : item?.word_audio;
 
+  const stopPlayback = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    setPlayhead(null);
+    setUserPlayhead(null);
+  };
+
+  const playWithCursor = useCallback(
+    (src: string, setCursor: (t: number | null) => void) => {
+      stopPlayback();
+      cancelAnimationFrame(rafRef.current);
+      const audio = new Audio(src);
+      audioRef.current = audio;
+      audio.play();
+      const tick = () => {
+        if (audioRef.current === audio && !audio.paused && !audio.ended) {
+          setCursor(audio.currentTime);
+          rafRef.current = requestAnimationFrame(tick);
+        } else {
+          setCursor(null);
+        }
+      };
+      rafRef.current = requestAnimationFrame(tick);
+    },
+    []
+  );
+
   const playTarget = useCallback(() => {
     if (!item || !audioFile) return;
-    const audio = new Audio(mediaUrl(item.deck_id, audioFile));
-    audioRef.current = audio;
-    audio.play();
-    const tick = () => {
-      if (!audio.paused && !audio.ended) {
-        setPlayhead(audio.currentTime);
-        rafRef.current = requestAnimationFrame(tick);
-      } else {
-        setPlayhead(null);
-      }
-    };
-    rafRef.current = requestAnimationFrame(tick);
-  }, [item, audioFile]);
+    playWithCursor(mediaUrl(item.deck_id, audioFile), setPlayhead);
+  }, [item, audioFile, playWithCursor]);
+
+  const playUserTake = useCallback(() => {
+    if (!userAudioUrl) return;
+    playWithCursor(userAudioUrl, setUserPlayhead);
+  }, [userAudioUrl, playWithCursor]);
 
   const startRecording = async () => {
     setError("");
     setResult(null);
+    stopPlayback();
     try {
       const rec = new Recorder();
       await rec.start();
@@ -143,11 +179,18 @@ export default function PracticeCore({
   if (!item) return <span className="spin" />;
 
   const accent = item.accent;
+  const isEstimate = accent?.accent_source === "audio";
   const dueText =
     srsInfo &&
-    (srsInfo.interval_days >= 1
-      ? `next review in ${Math.round(srsInfo.interval_days)} day${Math.round(srsInfo.interval_days) === 1 ? "" : "s"}`
-      : "again in 10 minutes");
+    (srsInfo.outcome === "early"
+      ? "extra practice — review schedule unchanged"
+      : srsInfo.outcome === "lapse"
+      ? "again in 10 minutes"
+      : srsInfo.interval_days >= 1
+      ? `next ${mode} review in ${Math.round(srsInfo.interval_days)} day${
+          Math.round(srsInfo.interval_days) === 1 ? "" : "s"
+        }`
+      : `next ${mode} review in ${Math.max(1, Math.round(srsInfo.interval_days * 24))}h`);
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -156,8 +199,12 @@ export default function PracticeCore({
           <span className="expression jp">{item.expression}</span>
           {item.reading && <span className="reading jp">{item.reading}</span>}
           {accent?.accent !== null && accent?.accent !== undefined && (
-            <span className="chip accent">
+            <span
+              className="chip accent"
+              title={isEstimate ? "No dictionary entry — accent estimated from the native audio" : undefined}
+            >
               [{accent.accent}] {accent.category}
+              {isEstimate && " · est."}
             </span>
           )}
           <span className="hint" style={{ marginLeft: "auto" }}>
@@ -200,10 +247,16 @@ export default function PracticeCore({
         <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
           {item.targets.sentence && item.targets.word && (
             <div className="mode-toggle">
-              <button className={mode === "sentence" ? "on" : ""} onClick={() => { setMode("sentence"); setResult(null); }}>
+              <button
+                className={mode === "sentence" ? "on" : ""}
+                onClick={() => { setMode("sentence"); setResult(null); stopPlayback(); }}
+              >
                 Sentence
               </button>
-              <button className={mode === "word" ? "on" : ""} onClick={() => { setMode("word"); setResult(null); }}>
+              <button
+                className={mode === "word" ? "on" : ""}
+                onClick={() => { setMode("word"); setResult(null); stopPlayback(); }}
+              >
                 Word
               </button>
             </div>
@@ -211,13 +264,35 @@ export default function PracticeCore({
           <button onClick={playTarget} disabled={!audioFile}>
             ▶ Play native audio
           </button>
-          {userAudioUrl && (
-            <button onClick={() => new Audio(userAudioUrl).play()}>▶ Play your take</button>
+          {userAudioUrl && result && (
+            <button onClick={playUserTake}>▶ Play your take</button>
+          )}
+          {result && (
+            <label
+              className="hint"
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, margin: 0, cursor: "pointer" }}
+            >
+              <input
+                type="checkbox"
+                checked={separateUser}
+                onChange={(e) => {
+                  setSeparateUser(e.target.checked);
+                  localStorage.setItem(SEP_GRAPH_KEY, e.target.checked ? "1" : "0");
+                }}
+              />
+              my line on its own graph
+            </label>
           )}
         </div>
 
         {target ? (
-          <ContourChart target={target} result={result} playheadTime={playhead} />
+          <ContourChart
+            target={target}
+            result={result}
+            playheadTime={playhead}
+            userPlayheadTime={userPlayhead}
+            separateUser={separateUser}
+          />
         ) : (
           <p className="hint">No {mode} audio on this card.</p>
         )}

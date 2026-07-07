@@ -100,10 +100,20 @@ export interface ItemSummary {
   best_score: number | null;
 }
 
+export interface WordSpan {
+  surface: string;
+  start: number;
+  end: number;
+  accent?: number | null;
+  moras?: string[];
+}
+
 export interface TargetAnalysis {
   contour: [number, number | null][];
   ref_hz: number;
   duration: number;
+  words?: WordSpan[]; // estimated word spans (sentence mode)
+  moras?: WordSpan[]; // estimated mora spans (word mode)
 }
 
 export interface ItemDetail {
@@ -118,7 +128,7 @@ export interface ItemDetail {
   word_audio: string;
   accent: AccentData | null;
   targets: { sentence?: TargetAnalysis; word?: TargetAnalysis };
-  srs: any;
+  srs: Record<string, any>;
 }
 
 export interface AttemptResult {
@@ -135,7 +145,9 @@ export interface AttemptResult {
   divergences: { start: number; end: number; kind: string; mean_dev_st: number }[];
   aligned_user: [number, number][];
   user_contour: [number, number][];
+  warp: [number, number][]; // sparse [user_time, target_time] pairs from DTW
   notes: string[];
   target_ref_hz: number;
   user_ref_hz: number;
+  user_duration?: number;
 }
