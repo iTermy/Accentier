@@ -96,7 +96,8 @@ def test_full_loop():
     res = r.json()
     print("perfect-shadow score:", res["result"]["score"], res["result"]["metrics"])
     assert res["result"]["score"] > 90, "identical audio should score near-perfect"
-    assert res["srs"]["reps"] == 1
+    assert res["result"]["warp"], "DTW warp map should be present for playhead sync"
+    assert res["srs"]["reps"] == 1 and res["srs"]["outcome"] == "scheduled"
 
     # --- a garbage attempt (noise) scores low ---
     import numpy as np
@@ -145,6 +146,11 @@ def test_japanese_deck_import():
     acc = d["accent"]
     assert acc["moras"] and acc["pattern"] and len(acc["moras"]) == len(acc["pattern"])
     assert any(w.get("pattern") for w in acc.get("sentence_words", []))
+    # estimated word spans on the sentence target, ordered and in-range
+    spans = d["targets"]["sentence"].get("words")
+    assert spans, "sentence target should carry estimated word spans"
+    dur = d["targets"]["sentence"]["duration"]
+    assert all(0 <= s["start"] <= s["end"] <= dur + 0.05 for s in spans)
     print("sample item:", d["expression"], d["reading"], acc["accent"], acc["category"],
           "source:", acc["accent_source"])
 

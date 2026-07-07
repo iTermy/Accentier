@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 
 from .. import auth
 from ..apkg import parse_apkg
-from ..config import MEDIA_DIR, UPLOADS_DIR
+from ..config import ATTEMPTS_DIR, MEDIA_DIR, UPLOADS_DIR
 from ..db import get_conn, now, row_to_dict, tx
 from ..languages.base import detect_language, get_module
 
@@ -65,7 +65,7 @@ def upload_deck(file: UploadFile, language: str = Form("auto"), user: dict = aut
                             data = archive.read_media(fname)
                             if data:
                                 # sanitize: media names come from the deck, keep basename only
-                                safe = fname.replace("/", "_").replace("\\", "_")
+                                safe = fname.replace("/", "_").replace("\\", "_").replace("..", "_")
                                 (deck_media / safe).write_bytes(data)
                                 extracted.add(fname)
                     accent = module.build_accent_data(note)
@@ -113,8 +113,17 @@ def delete_deck(deck_id: int, user: dict = auth.CurrentUser):
     row = get_conn().execute("SELECT * FROM decks WHERE id=? AND user_id=?", (deck_id, user["id"])).fetchone()
     if not row:
         raise HTTPException(404, "Deck not found")
+    # attempt rows cascade with the items; their recordings need explicit cleanup
+    wavs = get_conn().execute(
+        """SELECT a.audio_path FROM attempts a JOIN items i ON i.id = a.item_id
+           WHERE i.deck_id=? AND a.audio_path IS NOT NULL""",
+        (deck_id,),
+    ).fetchall()
     with tx() as conn:
+        conn.execute("DELETE FROM items WHERE deck_id=?", (deck_id,))
         conn.execute("DELETE FROM decks WHERE id=?", (deck_id,))
+    for w in wavs:
+        (ATTEMPTS_DIR / w["audio_path"]).unlink(missing_ok=True)
     shutil.rmtree(MEDIA_DIR / str(deck_id), ignore_errors=True)
     return {"ok": True}
 
@@ -154,5 +163,10 @@ def serve_media(deck_id: int, filename: str, user: dict = auth.CurrentUser):
     path = MEDIA_DIR / str(deck_id) / safe
     if not path.exists():
         raise HTTPException(404, "Media not found")
-    mt = "audio/mpeg" if not safe.lower().endswith((".wav", ".ogg", ".opus", ".flac")) else None
+    ext = safe.rsplit(".", 1)[-1].lower() if "." in safe else ""
+    mt = {
+        "mp3": "audio/mpeg", "wav": "audio/wav", "ogg": "audio/ogg",
+        "opus": "audio/ogg", "flac": "audio/flac", "m4a": "audio/mp4",
+        "aac": "audio/aac", "webm": "audio/webm",
+    }.get(ext, "audio/mpeg")
     return FileResponse(path, media_type=mt)

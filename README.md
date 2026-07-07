@@ -49,8 +49,9 @@ server/  FastAPI + SQLite — API, DSP, language modules, serves web/dist
     dsp/align.py      DTW alignment + divergence scoring between contours
     languages/        LanguageModule interface; japanese.py, generic.py
     kanjium.py        Kanjium pitch-accent DB loader (vendored, 124k entries)
+    alignment.py      estimated word/mora spans over the target audio
     analysis.py       target/attempt analysis orchestration + caching
-    srs.py            SM-2-style scheduler driven by shadowing scores
+    srs.py            SM-2-style scheduler driven by shadowing scores (per mode)
     routers/          auth, decks/upload/media, items/attempts/review/stats
   vendor/kanjium_accents.txt   pitch-accent ground truth (see below)
   data/               runtime: SQLite DB, extracted media, recordings (gitignored)
@@ -66,6 +67,22 @@ smoothing and octave-glitch removal. Verified against synthetic tones (±0.7 Hz 
 vibrato), and produces plausible tracks on the deck's anime audio (speaker medians
 98–380 Hz). 10 ms hop, 64 ms window, 60–500 Hz range.
 
+**Contour denoising** — raw speech F0 is noisy in two characteristic ways, and both
+are repaired before anything is scored or drawn. *Octave errors* (creaky voice makes
+the tracker lock onto a subharmonic for a stretch) are fixed at the segment level:
+voiced runs are split at >9 st jumps and any segment sitting ≈ an octave from the
+utterance's median pitch is shifted back. *Frame jitter* is handled by
+`smooth_semitones`: unvoiced gaps under 120 ms (consonants inside a word) are
+bridged by interpolation, then each voiced segment gets a quadratic Savitzky-Golay
+pass — gentle enough that 100–200 ms accent drops survive intact. The result is a
+contour where the sentence's actual highs, lows and flow are readable at a glance.
+
+**Word labels on the chart** — `alignment.py` estimates where each word sits in the
+target audio: speech chunks come from frame energy (pauses split them), and the
+tokenizer's words are distributed across the chunks' concatenated speech time
+proportionally to mora count. Not forced alignment — the chart labels them as
+estimates — but enough to connect the melody to the text while shadowing.
+
 **Speaker normalization** — contours are converted to *semitones relative to each
 speaker's own median voiced pitch*, so a low-voiced learner shadowing a high-voiced
 seiyuu is scored on melody, not register. (Verified: a +6 st transposed copy of the
@@ -79,12 +96,16 @@ per-language weights. Divergence regions are maximal runs where |Δst| > 2.8 for
 ≥ 90 ms, drawn as bands on the target timeline. Sanity: identical audio → 100,
 tempo-shifted noisy copy → 96, a different sentence → ~50, noise/silence → 0.
 
-**Target accent data** — three tiers, best available wins:
+**Target accent data** — four tiers, best available wins:
 1. the deck's own Yomitan `PitchPosition` field (653/900 notes in the JP test deck),
 2. the vendored **Kanjium** accent database (open source, the same data Yomitan
    pitch dictionaries are built from), keyed by surface+reading with lemma fallback
    via the UniDic tokenizer — lifts coverage to 782/900,
-3. always: the native audio's own F0 contour, which is what the recording is
+3. for words neither covers: the accent is **estimated from the word audio itself**
+   (mora-binned pitch means, largest downstep wins; heiban and odaka are
+   indistinguishable in isolation so "no drop" maps to [0]) — cached and clearly
+   labeled *est.* in the UI,
+4. always: the native audio's own F0 contour, which is what the recording is
    actually compared against. The dictionary data drives the schematic mora diagram;
    the audio drives the score.
 
@@ -114,7 +135,18 @@ SQLite: users (PBKDF2 passwords, bearer-token sessions), decks, items (with cach
 target analysis), attempts (score + full feedback JSON + the recording), and SRS
 state. The scheduler is SM-2-lite where quality comes from the shadowing score
 instead of self-grading: ≥85 grows the interval fast, <55 lapses the item back to
-10 minutes. The dashboard surfaces the due queue; Review mode walks through it.
+10 minutes. Two rules keep it honest: **sentence and word shadowing schedule
+separately** (they're different skills — state is per item+mode), and **practicing
+again before an item is due never grows the interval** (so five good takes in a row
+don't compound 1d → 3d → 7d in as many minutes; a bad take can still lapse it).
+The dashboard surfaces the due queue; Review mode walks through it.
+
+### Studying a deck
+
+The deck page is a workbench: filter (practiced / due / accent category / search),
+sort (deck order, length, accent number, best score, due date), then **Start
+studying** walks the exact list you built — from the start, from the end, or
+shuffled — with progress and prev/next. Sessions survive a refresh.
 
 ## Known limitations / deferred (deliberately)
 
@@ -122,14 +154,17 @@ instead of self-grading: ≥85 grows the interval fast, <55 lapses the item back
   sentence melody — accent-phrase merging and downstep are not modeled (labeled as
   such in the UI). The *audio contour* target is unaffected; this only concerns the
   schematic diagram.
-- **Divergences are time-anchored, not mora-anchored.** Naming the exact word/mora
-  you missed needs forced alignment (text↔audio), the top candidate for the next
-  iteration.
+- **Word positions on the chart are estimates** (energy chunks + mora-proportional
+  spans), not forced alignment. Good enough to orient; a real aligner would let
+  divergences name the exact mora you missed and remains the top candidate for the
+  next iteration.
 - Word-mode audio (Yomitan dictionary audio) and sentence-mode audio are analyzed
   identically; there's no per-word extraction from sentence audio.
+- Audio-based accent estimates can't tell heiban from odaka in isolation, and trust
+  the even-mora-split assumption; they're labeled *est.* everywhere.
 - Auth is minimal: sessions never expire, no rate limiting, no password reset.
-- Re-uploading a deck creates a new deck (no merge/dedupe); attempt WAVs accumulate
-  with no cleanup job.
+- Re-uploading a deck creates a new deck (no merge/dedupe). Deleting a deck now
+  cleans up its media and attempt recordings.
 - Legacy .apkg support is tested against a synthetic deck, not a real old export.
 - Kanjium data is vendored as-is; homograph disambiguation takes the first listed
   accent when the deck doesn't specify one.

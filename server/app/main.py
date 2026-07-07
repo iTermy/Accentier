@@ -37,7 +37,9 @@ if WEB_DIST.exists():
 
     @app.get("/{path:path}")
     def spa(path: str):
-        target = WEB_DIST / path
-        if path and target.is_file():
-            return FileResponse(target)
+        if path:
+            target = (WEB_DIST / path).resolve()
+            # keep resolved paths inside dist ("../" would escape otherwise)
+            if target.is_file() and target.is_relative_to(WEB_DIST.resolve()):
+                return FileResponse(target)
         return FileResponse(WEB_DIST / "index.html")
