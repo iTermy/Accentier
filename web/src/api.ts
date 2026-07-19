@@ -140,6 +140,7 @@ export interface AttemptResult {
     timing: number;
     duration_ratio: number;
     mean_abs_dev_st?: number;
+    warp?: number; // DTW path diagonality 0..1 — low = heavy time-warping
     no_voice?: boolean;
   };
   divergences: { start: number; end: number; kind: string; mean_dev_st: number }[];
@@ -150,4 +151,5 @@ export interface AttemptResult {
   target_ref_hz: number;
   user_ref_hz: number;
   user_duration?: number;
+  slice?: [number, number]; // present when scored against a target sub-region
 }

@@ -29,7 +29,7 @@ SLOPE_EPS = 8.0              # st/sec below which slope counts as flat
 
 
 def _voiced_series(times: np.ndarray, st: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    smoothed = smooth_semitones(times, st, window=7)
+    smoothed = smooth_semitones(times, st)
     mask = ~np.isnan(smoothed)
     t, v = times[mask], smoothed[mask]
     slope = np.gradient(v, t) if len(v) >= 3 else np.zeros_like(v)
@@ -83,24 +83,35 @@ def compare_contours(target: dict, user: dict, weights: dict[str, float]) -> dic
 
     # cost matrix: level + slope-direction agreement
     cost = np.abs(uv[:, None] - tv[None, :]) + 0.7 * np.abs(us[:, None] - ts[None, :]) / 20.0
-    band = max(12, int(0.2 * max(len(uv), len(tv))))
+    band = max(12, int(0.15 * max(len(uv), len(tv))))
     path = _dtw(cost, band)
 
     ui = np.array([p[0] for p in path])
     ti = np.array([p[1] for p in path])
     dev = uv[ui] - tv[ti]
 
+    # DTW can flatter a wrong take: with enough local stretching almost any
+    # melody correlates with the target. Diagonality measures how much of the
+    # path advances both series together; plateaus (one frame absorbing many)
+    # mean the "match" only exists after heavy warping, so shape/direction
+    # get discounted accordingly.
+    steps = np.diff(np.stack([ui, ti], axis=1), axis=0)
+    diag_steps = int(np.sum((steps[:, 0] > 0) & (steps[:, 1] > 0)))
+    max_diag = max(1, min(len(uv), len(tv)) - 1)
+    diagonality = min(1.0, diag_steps / max_diag)
+    warp_discount = 0.75 + 0.25 * diagonality
+
     # ---- metrics ----
     if np.std(uv[ui]) > 1e-6 and np.std(tv[ti]) > 1e-6:
         shape = float(np.corrcoef(uv[ui], tv[ti])[0, 1])
     else:
         shape = 0.0
-    shape_score = max(0.0, shape)
+    shape_score = max(0.0, shape) * warp_discount
 
     su, stg = us[ui], ts[ti]
     both_flat = (np.abs(su) < SLOPE_EPS) & (np.abs(stg) < SLOPE_EPS)
     same_sign = np.sign(su) == np.sign(stg)
-    direction = float(np.mean(both_flat | same_sign))
+    direction = float(np.mean(both_flat | same_sign)) * warp_discount
 
     mean_abs_dev = float(np.mean(np.abs(dev)))
     level = float(np.clip(1.0 - max(0.0, mean_abs_dev - 0.8) / 4.0, 0.0, 1.0))
@@ -117,6 +128,7 @@ def compare_contours(target: dict, user: dict, weights: dict[str, float]) -> dic
         "timing": round(timing, 3),
         "duration_ratio": round(duration_ratio, 3),
         "mean_abs_dev_st": round(mean_abs_dev, 2),
+        "warp": round(diagonality, 3),
     }
     score = 100.0 * sum(weights[k] * metrics[k] for k in ("shape", "direction", "level", "timing"))
 

@@ -15,7 +15,7 @@ from .dsp.yin import semitone_contour, smooth_semitones, yin_f0
 from .languages.base import get_module
 
 # bump when the target payload format/DSP changes; stale caches regenerate
-TARGET_VERSION = 2
+TARGET_VERSION = 4
 
 
 def media_path(deck_id: int, filename: str) -> Path:
@@ -53,11 +53,13 @@ def get_target_analysis(item: dict, mode: str = "sentence") -> dict | None:
     # estimated word/mora time spans so the chart can label the melody
     accent = item.get("accent") or {}
     if mode == "sentence" and accent.get("sentence_words"):
-        spans = align_words(analysis["times"], analysis["rms"], accent["sentence_words"])
+        spans = align_words(analysis["times"], analysis["rms"],
+                            accent["sentence_words"], analysis["f0"])
         if spans:
             payload["words"] = spans
     elif mode == "word" and accent.get("moras"):
-        spans = align_moras(analysis["times"], analysis["rms"], accent["moras"])
+        spans = align_moras(analysis["times"], analysis["rms"],
+                            accent["moras"], analysis["f0"])
         if spans:
             payload["moras"] = spans
 
@@ -90,12 +92,31 @@ def ensure_accent_estimate(item: dict, language: str) -> dict | None:
     return accent
 
 
-def analyze_attempt(item: dict, language: str, user_audio: bytes, mode: str) -> dict:
-    """Run the full comparison for a user recording against the item's target."""
+def analyze_attempt(item: dict, language: str, user_audio: bytes, mode: str,
+                    slice_range: tuple[float, float] | None = None) -> dict:
+    """Run the full comparison for a user recording against the item's target.
+
+    slice_range=(start, end) compares against just that window of the target
+    (the frontend's region selection). Frame times stay absolute, so the
+    returned divergences/aligned contour land on the right part of the chart.
+    """
     filename = item["sentence_audio"] if mode == "sentence" else item["word_audio"]
     target_raw = _analyze_file(media_path(item["deck_id"], filename))
     if target_raw is None:
         raise ValueError("Target audio missing for this item")
+
+    if slice_range is not None:
+        start = max(0.0, slice_range[0])
+        end = min(target_raw["duration"], slice_range[1])
+        if end - start < 0.25:
+            raise ValueError("Selected region is too short to analyze")
+        mask = (target_raw["times"] >= start) & (target_raw["times"] <= end)
+        if int(mask.sum()) < 5:
+            raise ValueError("Selected region is too short to analyze")
+        target_raw = {
+            **{k: v[mask] for k, v in target_raw.items() if isinstance(v, np.ndarray)},
+            "duration": end - start,
+        }
 
     samples, sr = decode_audio(user_audio)
     user_raw = {**yin_f0(samples, sr), "duration": len(samples) / sr}
@@ -105,4 +126,6 @@ def analyze_attempt(item: dict, language: str, user_audio: bytes, mode: str) -> 
     comparison["notes"] = module.feedback_notes(comparison["metrics"], item.get("accent"))
     comparison["mode"] = mode
     comparison["user_duration"] = round(user_raw["duration"], 3)
+    if slice_range is not None:
+        comparison["slice"] = [round(start, 3), round(end, 3)]
     return comparison

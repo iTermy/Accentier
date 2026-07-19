@@ -1,11 +1,13 @@
 // The core shadowing loop for one item:
 // listen to native audio -> record yourself -> server analyzes -> overlaid
 // contours + score + coaching notes. Used by PracticePage, ReviewPage and
-// StudyPage.
+// StudyPage. Supports drilling: click the chart to play from a point, drag
+// to slice out a region, slow playback down (pitch-preserving), loop the
+// slice, and record against just the slice (analyzed but not scheduled).
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, AttemptResult, ItemDetail, api, mediaUrl } from "../api";
 import { Recorder } from "../recorder";
-import ContourChart from "./ContourChart";
+import ContourChart, { Selection } from "./ContourChart";
 import { SentencePitchDiagram, WordPitchDiagram } from "./PitchDiagram";
 import ScoreRing from "./ScoreRing";
 
@@ -20,6 +22,8 @@ const SUBSCORE_INFO: [keyof AttemptResult["metrics"], string, string][] = [
 ];
 
 const SEP_GRAPH_KEY = "accentier_separate_graph";
+const RATE_KEY = "accentier_rate";
+const RATES = [0.5, 0.65, 0.75, 0.9, 1];
 
 export default function PracticeCore({
   itemId,
@@ -43,6 +47,12 @@ export default function PracticeCore({
   const [playhead, setPlayhead] = useState<number | null>(null);
   const [userPlayhead, setUserPlayhead] = useState<number | null>(null);
   const [userAudioUrl, setUserAudioUrl] = useState<string | null>(null);
+  const [selection, setSelection] = useState<Selection | null>(null);
+  const [loop, setLoop] = useState(false);
+  const [rate, setRate] = useState(() => {
+    const r = parseFloat(localStorage.getItem(RATE_KEY) || "1");
+    return RATES.includes(r) ? r : 1;
+  });
   const [separateUser, setSeparateUser] = useState(
     () => localStorage.getItem(SEP_GRAPH_KEY) === "1"
   );
@@ -58,6 +68,7 @@ export default function PracticeCore({
     setSrsInfo(null);
     setError("");
     setPhase("idle");
+    setSelection(null);
     api<ItemDetail>(`/api/items/${itemId}`)
       .then((d) => {
         setItem(d);
@@ -79,6 +90,11 @@ export default function PracticeCore({
     };
   }, [userAudioUrl]);
 
+  // speed change applies to whatever is currently playing too
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.playbackRate = rate;
+  }, [rate]);
+
   const target = item?.targets[mode];
   const audioFile = mode === "sentence" ? item?.sentence_audio : item?.word_audio;
 
@@ -92,33 +108,75 @@ export default function PracticeCore({
   };
 
   const playWithCursor = useCallback(
-    (src: string, setCursor: (t: number | null) => void) => {
+    (
+      src: string,
+      setCursor: (t: number | null) => void,
+      opts?: { from?: number; until?: number; rate?: number; loop?: boolean; loopTo?: number }
+    ) => {
       stopPlayback();
       cancelAnimationFrame(rafRef.current);
       const audio = new Audio(src);
       audioRef.current = audio;
-      audio.play();
+      audio.playbackRate = opts?.rate ?? 1;
+      (audio as any).preservesPitch = true; // slow speed, same pitch — that's the point
+      const from = opts?.from ?? 0;
+      const until = opts?.until;
+      const loopTo = opts?.loopTo ?? from;
+      const begin = () => {
+        if (from > 0) audio.currentTime = from;
+        audio.play();
+      };
+      if (audio.readyState >= 1) begin();
+      else audio.addEventListener("loadedmetadata", begin, { once: true });
       const tick = () => {
-        if (audioRef.current === audio && !audio.paused && !audio.ended) {
-          setCursor(audio.currentTime);
-          rafRef.current = requestAnimationFrame(tick);
-        } else {
-          setCursor(null);
+        if (audioRef.current !== audio) return; // superseded or stopped
+        if (until != null && audio.currentTime >= until - 0.02) {
+          if (opts?.loop) {
+            audio.currentTime = loopTo;
+          } else {
+            audio.pause();
+            audioRef.current = null;
+            setCursor(null);
+            return;
+          }
         }
+        if (audio.ended) {
+          if (opts?.loop) {
+            audio.currentTime = loopTo;
+            audio.play();
+          } else {
+            audioRef.current = null;
+            setCursor(null);
+            return;
+          }
+        }
+        setCursor(audio.paused ? null : audio.currentTime);
+        rafRef.current = requestAnimationFrame(tick);
       };
       rafRef.current = requestAnimationFrame(tick);
     },
     []
   );
 
-  const playTarget = useCallback(() => {
-    if (!item || !audioFile) return;
-    playWithCursor(mediaUrl(item.deck_id, audioFile), setPlayhead);
-  }, [item, audioFile, playWithCursor]);
+  const playTarget = useCallback(
+    (from?: number) => {
+      if (!item || !audioFile) return;
+      const start = from ?? selection?.start ?? 0;
+      const inSlice = selection && start >= selection.start - 0.01 && start < selection.end;
+      playWithCursor(mediaUrl(item.deck_id, audioFile), setPlayhead, {
+        from: start,
+        until: inSlice ? selection!.end : undefined,
+        rate,
+        loop,
+        loopTo: inSlice ? selection!.start : 0,
+      });
+    },
+    [item, audioFile, playWithCursor, selection, rate, loop]
+  );
 
   const playUserTake = useCallback(() => {
     if (!userAudioUrl) return;
-    playWithCursor(userAudioUrl, setUserPlayhead);
+    playWithCursor(userAudioUrl, setUserPlayhead, { rate: 1 });
   }, [userAudioUrl, playWithCursor]);
 
   const startRecording = async () => {
@@ -161,13 +219,17 @@ export default function PracticeCore({
       const form = new FormData();
       form.append("audio", wav, "attempt.wav");
       form.append("mode", mode);
+      if (selection) {
+        form.append("slice_start", String(selection.start));
+        form.append("slice_end", String(selection.end));
+      }
       const res = await api<{ result: AttemptResult; srs: any }>(`/api/items/${item.id}/attempts`, {
         method: "POST",
         body: form,
       });
       setResult(res.result);
       setSrsInfo(res.srs);
-      onScored?.(res.result.score);
+      if (!res.result.slice) onScored?.(res.result.score);
     } catch (e: any) {
       setError(`Analysis failed: ${e.message}`);
     } finally {
@@ -191,6 +253,13 @@ export default function PracticeCore({
           Math.round(srsInfo.interval_days) === 1 ? "" : "s"
         }`
       : `next ${mode} review in ${Math.max(1, Math.round(srsInfo.interval_days * 24))}h`);
+
+  const switchMode = (m: Mode) => {
+    setMode(m);
+    setResult(null);
+    setSelection(null);
+    stopPlayback();
+  };
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -247,23 +316,51 @@ export default function PracticeCore({
         <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
           {item.targets.sentence && item.targets.word && (
             <div className="mode-toggle">
-              <button
-                className={mode === "sentence" ? "on" : ""}
-                onClick={() => { setMode("sentence"); setResult(null); stopPlayback(); }}
-              >
+              <button className={mode === "sentence" ? "on" : ""} onClick={() => switchMode("sentence")}>
                 Sentence
               </button>
-              <button
-                className={mode === "word" ? "on" : ""}
-                onClick={() => { setMode("word"); setResult(null); stopPlayback(); }}
-              >
+              <button className={mode === "word" ? "on" : ""} onClick={() => switchMode("word")}>
                 Word
               </button>
             </div>
           )}
-          <button onClick={playTarget} disabled={!audioFile}>
-            ▶ Play native audio
+          <button onClick={() => playTarget()} disabled={!audioFile}>
+            ▶ Play {selection ? "slice" : "native audio"}
           </button>
+          <select
+            value={String(rate)}
+            onChange={(e) => {
+              const r = parseFloat(e.target.value);
+              setRate(r);
+              localStorage.setItem(RATE_KEY, String(r));
+            }}
+            title="Playback speed (pitch stays the same)"
+          >
+            {RATES.map((r) => (
+              <option key={r} value={String(r)}>
+                {r === 1 ? "1× speed" : `${r}× slow`}
+              </option>
+            ))}
+          </select>
+          <button
+            className={`ghost small${loop ? " toggled" : ""}`}
+            onClick={() => setLoop(!loop)}
+            title="Repeat the slice (or whole audio) until you stop it"
+          >
+            🔁 loop
+          </button>
+          {selection && (
+            <button
+              className="ghost small"
+              onClick={() => {
+                setSelection(null);
+                stopPlayback();
+              }}
+              title="Clear the selected slice"
+            >
+              ✕ slice {selection.start.toFixed(2)}–{selection.end.toFixed(2)}s
+            </button>
+          )}
           {userAudioUrl && result && (
             <button onClick={playUserTake}>▶ Play your take</button>
           )}
@@ -292,6 +389,12 @@ export default function PracticeCore({
             playheadTime={playhead}
             userPlayheadTime={userPlayhead}
             separateUser={separateUser}
+            selection={selection}
+            onSelectionChange={(sel) => {
+              setSelection(sel);
+              stopPlayback();
+            }}
+            onSeek={(t) => playTarget(t)}
           />
         ) : (
           <p className="hint">No {mode} audio on this card.</p>
@@ -308,7 +411,7 @@ export default function PracticeCore({
               <span className="dot" />
             </button>
           ) : (
-            <div style={{ width: 64, height: 64, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ width: 48, height: 48, display: "flex", alignItems: "center", justifyContent: "center" }}>
               <span className="spin" />
             </div>
           )}
@@ -321,7 +424,11 @@ export default function PracticeCore({
             </>
           )}
           {phase === "idle" && !result && (
-            <span className="hint">Listen first, then record yourself shadowing the {mode}.</span>
+            <span className="hint">
+              {selection
+                ? "Recording will be scored against just the selected slice."
+                : `Listen first, then record yourself shadowing the ${mode}.`}
+            </span>
           )}
           {phase === "analyzing" && <span className="hint">Extracting pitch and aligning…</span>}
         </div>
@@ -355,10 +462,17 @@ export default function PracticeCore({
               </li>
             )}
           </ul>
-          {dueText && (
+          {result.slice ? (
             <p className="hint" style={{ marginTop: 10 }}>
-              Progress saved — {dueText}.
+              Slice drill ({result.slice[0].toFixed(2)}–{result.slice[1].toFixed(2)}s) — scored for feedback
+              only, not saved to your history or review schedule.
             </p>
+          ) : (
+            dueText && (
+              <p className="hint" style={{ marginTop: 10 }}>
+                Progress saved — {dueText}.
+              </p>
+            )
           )}
         </div>
       )}

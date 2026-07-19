@@ -56,6 +56,7 @@ def item_detail(item_id: int, user: dict = auth.CurrentUser):
 
 @router.post("/items/{item_id}/attempts")
 def submit_attempt(item_id: int, audio: UploadFile, mode: str = Form("sentence"),
+                   slice_start: float | None = Form(None), slice_end: float | None = Form(None),
                    user: dict = auth.CurrentUser):
     if mode not in ("sentence", "word"):
         raise HTTPException(400, "mode must be 'sentence' or 'word'")
@@ -66,10 +67,19 @@ def submit_attempt(item_id: int, audio: UploadFile, mode: str = Form("sentence")
     if len(blob) < 100:
         raise HTTPException(400, "Empty recording")
 
+    slice_range = None
+    if slice_start is not None and slice_end is not None and slice_end > slice_start:
+        slice_range = (slice_start, slice_end)
+
     try:
-        result = analyze_attempt(item, item["language"], blob, mode)
+        result = analyze_attempt(item, item["language"], blob, mode, slice_range)
     except ValueError as e:
         raise HTTPException(422, str(e))
+
+    # slice practice is drill work on a fragment — analyze and return, but
+    # keep it out of attempt history, best scores and the review schedule
+    if slice_range is not None:
+        return {"attempt_id": None, "result": result, "srs": None}
 
     with tx() as conn:
         cur = conn.execute(

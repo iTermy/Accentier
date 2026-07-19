@@ -49,6 +49,7 @@ server/  FastAPI + SQLite — API, DSP, language modules, serves web/dist
     dsp/align.py      DTW alignment + divergence scoring between contours
     languages/        LanguageModule interface; japanese.py, generic.py
     kanjium.py        Kanjium pitch-accent DB loader (vendored, 124k entries)
+    pitchdict.py      optional Yomitan pitch dictionary loader (data/pitch_dicts/*.zip)
     alignment.py      estimated word/mora spans over the target audio
     analysis.py       target/attempt analysis orchestration + caching
     srs.py            SM-2-style scheduler driven by shadowing scores (per mode)
@@ -71,17 +72,27 @@ vibrato), and produces plausible tracks on the deck's anime audio (speaker media
 are repaired before anything is scored or drawn. *Octave errors* (creaky voice makes
 the tracker lock onto a subharmonic for a stretch) are fixed at the segment level:
 voiced runs are split at >9 st jumps and any segment sitting ≈ an octave from the
-utterance's median pitch is shifted back. *Frame jitter* is handled by
+utterance's median pitch is shifted back. *Jitter and vibrato* are handled by
 `smooth_semitones`: unvoiced gaps under 120 ms (consonants inside a word) are
-bridged by interpolation, then each voiced segment gets a quadratic Savitzky-Golay
-pass — gentle enough that 100–200 ms accent drops survive intact. The result is a
-contour where the sentence's actual highs, lows and flow are readable at a glance.
+bridged by interpolation, then each voiced segment gets a short median filter and a
+zero-phase 5 Hz Butterworth low-pass — natural voice wobble lives at ~4–8 Hz while
+accent falls and phrase intonation live below ~4 Hz, so the shimmer goes and a
+100–200 ms accent drop survives intact. The result is a contour where the
+sentence's actual highs, lows and flow are readable at a glance.
 
 **Word labels on the chart** — `alignment.py` estimates where each word sits in the
-target audio: speech chunks come from frame energy (pauses split them), and the
-tokenizer's words are distributed across the chunks' concatenated speech time
-proportionally to mora count. Not forced alignment — the chart labels them as
-estimates — but enough to connect the melody to the text while shadowing.
+target audio: speech chunks come from frame energy (pauses split them; the noise
+floor adapts to background beds under TV/anime lines) and are refined by the F0
+track — pitchless chunks (breaths, clicks, music-only stretches) are dropped and
+chunk edges tighten to the voiced span. Bracketed subtitle captions (（教師） speaker
+names) are excluded — they're never spoken. The words are then partitioned across
+chunks by a small dynamic program matching each chunk's share of time to each word
+run's share of moras (splits prefer punctuation but don't require it; a non-speech
+chunk can take zero words), distributed inside each chunk proportionally to
+devoicing-aware mora weight, and boundaries snap to the best nearby energy dip,
+preferably an unvoiced one (consonant closures). Not forced alignment — the chart
+labels them as estimates — but enough to connect the melody to the text while
+shadowing.
 
 **Speaker normalization** — contours are converted to *semitones relative to each
 speaker's own median voiced pitch*, so a low-voiced learner shadowing a high-voiced
@@ -92,20 +103,32 @@ target scores 100.)
 (semitone, slope) features; the slope term keeps rises aligned to rises. Four
 explainable subscores — contour shape (correlation), rises & falls (slope-sign
 agreement), pitch range (mean |Δst|), timing (duration ratio) — are combined with
-per-language weights. Divergence regions are maximal runs where |Δst| > 2.8 for
-≥ 90 ms, drawn as bands on the target timeline. Sanity: identical audio → 100,
-tempo-shifted noisy copy → 96, a different sentence → ~50, noise/silence → 0.
+per-language weights. Because DTW can flatter a wrong take by warping it hard, the
+path's *diagonality* discounts shape/direction when the match only exists after
+heavy time-stretching (and a coaching note says so). Divergence regions are maximal
+runs where |Δst| > 2.8 for ≥ 90 ms, drawn as bands on the target timeline. Sanity:
+identical audio → 100, tempo-shifted noisy copy → 96, a different sentence → ~50,
+noise/silence → 0.
 
-**Target accent data** — four tiers, best available wins:
+**Recording-edge noise** — mouse clicks, key taps and breaths at the edges of a take
+show up as short voiced blips far from the speech mass; `_remove_edge_spurs` drops
+them, and aberrant voicing onset/offset frames (plosive transients, final creak) are
+trimmed per voiced run — so the chart no longer spikes at the start or nosedives at
+the end of your line.
+
+**Target accent data** — five tiers, best available wins:
 1. the deck's own Yomitan `PitchPosition` field (653/900 notes in the JP test deck),
-2. the vendored **Kanjium** accent database (open source, the same data Yomitan
+2. any **Yomitan pitch dictionary zips** you drop into `server/data/pitch_dicts/`
+   (e.g. the NHK 2016 accent dictionary) — loaded lazily, keyed by surface+reading;
+   these are curated sources so they win over the aggregate,
+3. the vendored **Kanjium** accent database (open source, the same data Yomitan
    pitch dictionaries are built from), keyed by surface+reading with lemma fallback
-   via the UniDic tokenizer — lifts coverage to 782/900,
-3. for words neither covers: the accent is **estimated from the word audio itself**
+   via the UniDic tokenizer,
+4. for words none cover: the accent is **estimated from the word audio itself**
    (mora-binned pitch means, largest downstep wins; heiban and odaka are
    indistinguishable in isolation so "no drop" maps to [0]) — cached and clearly
    labeled *est.* in the UI,
-4. always: the native audio's own F0 contour, which is what the recording is
+5. always: the native audio's own F0 contour, which is what the recording is
    actually compared against. The dictionary data drives the schematic mora diagram;
    the audio drives the score.
 
@@ -148,6 +171,17 @@ sort (deck order, length, accent number, best score, due date), then **Start
 studying** walks the exact list you built — from the start, from the end, or
 shuffled — with progress and prev/next. Sessions survive a refresh.
 
+### Drilling a sentence
+
+The contour chart works like a video editor: a fixed time scale shows ~4 s of
+audio per screen and anything longer **scrolls** instead of squishing — longer
+sentence, longer scroll — with zoom
+(+/− buttons or ctrl+wheel, "fit" to see everything). **Click** the chart to play
+from that point. **Drag** to slice out a region — the slice can be played on loop,
+slowed down (0.5×–0.9×, pitch-preserving), zoomed to, and **recorded against**:
+a slice take is analyzed and scored like any other, but kept out of your attempt
+history and review schedule, since it's drill work on a fragment.
+
 ## Known limitations / deferred (deliberately)
 
 - **Sentence pitch diagram is word-by-word dictionary patterns**, not a true
@@ -174,3 +208,6 @@ shuffled — with progress and prev/next. Sessions survive a refresh.
 - [Kanjium](https://github.com/mifunetoshiro/kanjium) pitch-accent database.
 - [UniDic](https://clrd.ninjal.ac.jp/unidic/) via `fugashi` + `unidic-lite` for
   tokenization and readings.
+- Optional user-supplied Yomitan pitch dictionaries (NHK 2016 etc.) live in
+  `server/data/pitch_dicts/` — gitignored, since that data is copyrighted; the app
+  works fully without them.

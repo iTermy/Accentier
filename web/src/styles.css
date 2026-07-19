@@ -50,6 +50,7 @@ a:hover { text-decoration: underline; }
   border-radius: var(--radius); padding: 20px;
 }
 .grid { display: grid; gap: 16px; }
+.grid > * { min-width: 0; } /* keep wide chart canvases scrolling instead of blowing the grid out */
 .grid.cols-2 { grid-template-columns: 1fr 1fr; }
 .grid.cols-4 { grid-template-columns: repeat(4, 1fr); }
 @media (max-width: 800px) { .grid.cols-2, .grid.cols-4 { grid-template-columns: 1fr; } }
@@ -64,8 +65,11 @@ button:hover:not(:disabled) { border-color: rgba(255,255,255,0.2); }
 button:disabled { opacity: 0.45; cursor: default; }
 button.primary { background: var(--accent); border-color: transparent; color: #fff; }
 button.primary:hover:not(:disabled) { background: #ef6a5d; }
+button.success { background: var(--good); border-color: transparent; color: #fff; }
+button.success:hover:not(:disabled) { background: #12b912; }
 button.ghost { background: transparent; }
 button.small { padding: 4px 10px; font-size: 13px; }
+button.toggled { background: var(--panel-2); border-color: var(--target); color: var(--ink); }
 
 input[type="text"], input[type="password"] {
   font: inherit; color: var(--ink); background: var(--bg);
@@ -125,14 +129,14 @@ table.items tr.clickable:hover td { background: var(--panel-2); }
 .mode-toggle button { border: none; border-radius: 0; background: transparent; }
 .mode-toggle button.on { background: var(--panel-2); color: var(--ink); }
 
-.record-row { display: flex; align-items: center; gap: 14px; margin-top: 6px; flex-wrap: wrap; }
+.record-row { display: flex; align-items: center; gap: 14px; margin-top: 10px; flex-wrap: wrap; }
 .rec-btn {
-  width: 64px; height: 64px; border-radius: 50%; border: 2px solid var(--accent);
+  width: 48px; height: 48px; border-radius: 50%; border: 2px solid var(--accent);
   background: var(--accent-soft); display: flex; align-items: center; justify-content: center;
-  transition: transform 0.1s;
+  transition: transform 0.1s; padding: 0;
 }
 .rec-btn:hover { transform: scale(1.05); }
-.rec-btn .dot { width: 22px; height: 22px; border-radius: 50%; background: var(--accent); transition: border-radius 0.15s; }
+.rec-btn .dot { width: 16px; height: 16px; border-radius: 50%; background: var(--accent); transition: border-radius 0.15s; }
 .rec-btn.recording .dot { border-radius: 4px; animation: pulse 1.2s infinite; }
 @keyframes pulse { 50% { opacity: 0.55; } }
 
@@ -157,6 +161,12 @@ table.items tr.clickable:hover td { background: var(--panel-2); }
 .diagram-legend .swatch { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
 
 .contour-wrap { position: relative; }
+.chart-scroll { overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; scrollbar-color: var(--panel-2) transparent; }
+.chart-scroll::-webkit-scrollbar { height: 8px; }
+.chart-scroll::-webkit-scrollbar-thumb { background: var(--panel-2); border-radius: 4px; }
+.chart-scroll::-webkit-scrollbar-track { background: transparent; }
+.zoom-controls { display: inline-flex; gap: 4px; align-items: center; }
+.zoom-controls button { min-width: 28px; }
 .contour-tooltip {
   position: absolute; pointer-events: none; background: #0a0d12; border: 1px solid var(--border);
   border-radius: 6px; padding: 6px 10px; font-size: 12.5px; color: var(--ink-2);

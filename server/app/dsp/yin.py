@@ -109,6 +109,7 @@ def yin_f0(
             conf[i] = 1.0 - depth
 
     f0 = _postprocess(f0)
+    f0 = _remove_edge_spurs(f0, rms, hop / sr)
     times = (np.arange(n_frames) * hop + frame_length / 2) / sr
     return {"times": times, "f0": f0, "confidence": conf, "rms": rms}
 
@@ -127,6 +128,45 @@ def _voiced_runs(x: np.ndarray) -> list[tuple[int, int]]:
         runs.append((i, j))
         i = j
     return runs
+
+
+def _remove_edge_spurs(
+    f0: np.ndarray,
+    rms: np.ndarray,
+    hop_s: float,
+    max_spur_s: float = 0.18,
+    min_gap_s: float = 0.30,
+) -> np.ndarray:
+    """Drop short voiced runs at the very start/end of a take that sit far
+    from the main speech mass — mouse clicks, key taps, breaths. These show
+    up as a spike before the utterance or a blip after it. Only the outermost
+    runs are candidates; short isolated runs mid-utterance are kept (they can
+    be legitimate one-mora words). A loud-enough run only counts as a spur
+    when it is very short; quiet ones get the full length allowance.
+    """
+    out = f0.copy()
+    max_spur = max(1, int(round(max_spur_s / hop_s)))
+    min_gap = max(1, int(round(min_gap_s / hop_s)))
+    runs = _voiced_runs(out)
+    if len(runs) < 2:
+        return out
+    voiced_mask = ~np.isnan(out)
+    ref_rms = float(np.median(rms[voiced_mask])) if voiced_mask.any() else 0.0
+
+    def is_spur(i: int, j: int, gap: int) -> bool:
+        if gap < min_gap:
+            return False
+        length = j - i
+        weak = ref_rms > 0 and float(np.median(rms[i:j])) < 0.5 * ref_rms
+        return length <= max_spur if weak else length <= max(1, max_spur // 2)
+
+    while len(runs) >= 2 and is_spur(*runs[0], gap=runs[1][0] - runs[0][1]):
+        out[runs[0][0]:runs[0][1]] = np.nan
+        runs = runs[1:]
+    while len(runs) >= 2 and is_spur(*runs[-1], gap=runs[-1][0] - runs[-2][1]):
+        out[runs[-1][0]:runs[-1][1]] = np.nan
+        runs = runs[:-1]
+    return out
 
 
 def _postprocess(f0: np.ndarray, max_jump_semitones: float = 6.0) -> np.ndarray:
@@ -188,6 +228,33 @@ def _postprocess(f0: np.ndarray, max_jump_semitones: float = 6.0) -> np.ndarray:
         neighbors_close = abs(12 * np.log2(out[i + 1] / out[i - 1])) < 2.0
         if jump_prev > max_jump_semitones and jump_next > max_jump_semitones and neighbors_close:
             out[i] = (out[i - 1] + out[i + 1]) / 2
+
+    # trim aberrant run edges: voicing onsets/offsets ride plosive transients
+    # and creak, so the first/last frames of a run often spike or sag hard
+    # relative to the run body — visible as the "spike at the start / harsh
+    # drop at the end" artifacts. Drop up to 2 frames per edge that sit far
+    # from the adjacent interior median.
+    for i, j in _voiced_runs(out):
+        if j - i < 6:
+            continue
+        for _ in range(2):
+            if j - i < 6:
+                break
+            interior = np.median(out[i + 1:i + 6])
+            if abs(12 * np.log2(out[i] / interior)) > 3.0:
+                out[i] = np.nan
+                i += 1
+            else:
+                break
+        for _ in range(2):
+            if j - i < 6:
+                break
+            interior = np.median(out[j - 6:j - 1])
+            if abs(12 * np.log2(out[j - 1] / interior)) > 3.0:
+                out[j - 1] = np.nan
+                j -= 1
+            else:
+                break
     return out
 
 
@@ -195,19 +262,25 @@ def smooth_semitones(
     times: np.ndarray,
     st: np.ndarray,
     bridge_s: float = 0.12,
-    window: int = 9,
+    cutoff_hz: float = 5.0,
 ) -> np.ndarray:
     """Clean a semitone track for humans to read.
 
-    Two steps, both gentle enough to keep accent drops (100–200 ms events)
-    intact while killing frame-level jitter:
+    Steps, all gentle enough to keep accent drops (100–200 ms events)
+    intact while killing shimmer:
       1. bridge unvoiced gaps shorter than `bridge_s` by linear interpolation
          (obstruents inside a word break the track; melodically the line
          continues through them),
-      2. Savitzky-Golay (quadratic) smoothing per voiced segment.
+      2. short median filter per voiced segment (single-frame tracker noise),
+      3. zero-phase low-pass per voiced segment. Vibrato and natural voice
+         wobble sit at ~4–8 Hz; accent falls and phrase intonation live
+         below ~4 Hz, so a 5 Hz Butterworth (filtfilt — no time shift)
+         removes the shimmer while a fall still completes in under ~100 ms.
+         Segments too short to filter stably get Savitzky-Golay instead.
     NaN is preserved for real pauses.
     """
-    from scipy.signal import savgol_filter
+    from scipy.ndimage import median_filter
+    from scipy.signal import butter, filtfilt, savgol_filter
 
     out = st.astype(float).copy()
     n = len(out)
@@ -226,13 +299,19 @@ def smooth_semitones(
                 np.arange(a_end, b_start), [a_end - 1, b_start], [left, right]
             )
 
-    # 2. smooth each voiced segment independently
+    # 2 + 3. denoise each voiced segment independently
+    nyq = 0.5 / hop
+    b, a = butter(2, min(0.9, cutoff_hz / nyq), btype="low")
     for i, j in _voiced_runs(out):
         seg = out[i:j]
-        if len(seg) >= 5:
-            w = min(window, len(seg) if len(seg) % 2 == 1 else len(seg) - 1)
-            if w >= 5:
-                out[i:j] = savgol_filter(seg, w, polyorder=2)
+        if len(seg) < 5:
+            continue
+        seg = median_filter(seg, size=5, mode="nearest")
+        if len(seg) > 12:  # filtfilt needs > 3*max(len(a),len(b)) samples
+            out[i:j] = filtfilt(b, a, seg)
+        else:
+            w = len(seg) if len(seg) % 2 == 1 else len(seg) - 1
+            out[i:j] = savgol_filter(seg, w, polyorder=2)
     return out
 
 

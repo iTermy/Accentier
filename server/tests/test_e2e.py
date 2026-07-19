@@ -110,7 +110,29 @@ def test_full_loop():
     print("noise score:", bad)
     assert bad < 40
 
-    # --- history + review queue + stats ---
+    # --- slice drill: analyzed against a sub-region, never recorded/scheduled ---
+    dur = detail["targets"]["sentence"]["duration"]
+    s0, s1 = round(dur * 0.1, 3), round(dur * 0.7, 3)
+    buf.seek(0)
+    r = client.post(f"/api/items/{item['id']}/attempts", headers=h,
+                    files={"audio": ("rec.wav", buf, "audio/wav")},
+                    data={"mode": "sentence", "slice_start": str(s0), "slice_end": str(s1)})
+    assert r.status_code == 200, r.text
+    sl = r.json()
+    assert sl["attempt_id"] is None and sl["srs"] is None
+    assert sl["result"]["slice"] == [s0, s1]
+    # aligned output must land inside the slice window on the target timeline
+    aligned = sl["result"]["aligned_user"]
+    if aligned:
+        assert aligned[0][0] >= s0 - 0.05 and aligned[-1][0] <= s1 + 0.05
+    # a too-short slice is rejected cleanly
+    buf.seek(0)
+    r = client.post(f"/api/items/{item['id']}/attempts", headers=h,
+                    files={"audio": ("rec.wav", buf, "audio/wav")},
+                    data={"mode": "sentence", "slice_start": "0.0", "slice_end": "0.1"})
+    assert r.status_code == 422
+
+    # --- history + review queue + stats: slice drills must not appear ---
     hist = client.get(f"/api/items/{item['id']}/attempts", headers=h).json()
     assert len(hist) == 2
     queue = client.get("/api/review/queue", headers=h).json()

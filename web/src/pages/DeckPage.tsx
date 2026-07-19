@@ -158,15 +158,15 @@ export default function DeckPage() {
         className="panel"
         style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "12px 16px", marginBottom: 12 }}
       >
-        <b>Study these {items.length} items</b>
+        <button className="success" onClick={startStudy} disabled={!items.length}>
+          Start studying
+        </button>
+        <b>{items.length} items</b>
         <select value={studyOrder} onChange={(e) => setStudyOrder(e.target.value as StudyOrder)}>
           <option value="start">from the start</option>
           <option value="end">from the end</option>
           <option value="shuffle">shuffled</option>
         </select>
-        <button className="primary" onClick={startStudy} disabled={!items.length}>
-          Start studying
-        </button>
         <span className="hint">Goes through every item in the list above, one by one.</span>
       </div>
 

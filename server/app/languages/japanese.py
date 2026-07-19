@@ -27,7 +27,8 @@ import numpy as np
 
 from ..alignment import align_moras
 from ..dsp.yin import semitone_contour, smooth_semitones
-from ..kanjium import get_kanjium, hira_to_kata, kata_to_hira
+from ..kanjium import hira_to_kata, kata_to_hira
+from ..pitchdict import lookup_accents
 from .base import LanguageModule, register
 
 SMALL_KANA = set("ャュョァィゥェォヮ")
@@ -79,7 +80,6 @@ def categorize(accent: int, n_moras: int) -> str:
 
 def tokenize_sentence(sentence: str) -> list[dict]:
     """Tokenize and attach accent data per word where available."""
-    kanjium = get_kanjium()
     words = []
     for w in get_tagger()(sentence):
         f = w.feature
@@ -101,8 +101,9 @@ def tokenize_sentence(sentence: str) -> list[dict]:
             (getattr(f, "lemma", None), lemma_kana),
         ):
             if surf:
-                accents = kanjium.lookup(surf, kata_to_hira(rd or ""))
-                if accents:
+                hit = lookup_accents(surf, kata_to_hira(rd or ""))
+                if hit:
+                    accents = hit[0]
                     break
         if accents:
             accent = accents[0]
@@ -134,7 +135,7 @@ def estimate_accent(analysis: dict, moras: list[str]) -> int | None:
         return None
     st, _ = semitone_contour(analysis["f0"])
     sm = smooth_semitones(analysis["times"], st)
-    spans = align_moras(analysis["times"], analysis["rms"], moras)
+    spans = align_moras(analysis["times"], analysis["rms"], moras, analysis.get("f0"))
     if not spans:
         return None
     times = analysis["times"]
@@ -178,10 +179,10 @@ class JapaneseModule(LanguageModule):
             accent = note.pitch_position
             source = "deck"
         else:
-            accents = get_kanjium().lookup(note.expression, reading)
-            if accents:
-                accent = accents[0]
-                source = "kanjium"
+            hit = lookup_accents(note.expression, reading)
+            if hit:
+                accent = hit[0][0]
+                source = hit[1]
         data: dict = {
             "moras": moras,
             "accent": accent,
@@ -226,6 +227,8 @@ class JapaneseModule(LanguageModule):
             ratio = metrics.get("duration_ratio", 1.0)
             notes.append("You spoke noticeably {} than the target — shadow at native speed.".format(
                 "slower" if ratio > 1 else "faster"))
+        if metrics.get("warp", 1.0) < 0.55:
+            notes.append("Your melody only lines up after heavy time-stretching — try to hit the rises and falls at the same rhythm as the native audio.")
         if accent and accent.get("accent") is not None and not notes:
             cat = accent.get("category", "")
             if accent["accent"] == 0:
