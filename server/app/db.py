@@ -23,10 +23,11 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE TABLE IF NOT EXISTS decks (
     id INTEGER PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users(id),
+    user_id INTEGER REFERENCES users(id),   -- NULL for the built-in deck
     name TEXT NOT NULL,
     language TEXT NOT NULL,
     item_count INTEGER NOT NULL DEFAULT 0,
+    is_builtin INTEGER NOT NULL DEFAULT 0,
     created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS items (
@@ -38,11 +39,24 @@ CREATE TABLE IF NOT EXISTS items (
     sentence TEXT,
     sentence_audio TEXT,          -- filename under media/<deck_id>/
     word_audio TEXT,
+    word_meaning TEXT,
+    sentence_meaning TEXT,
+    pitch_notes TEXT,             -- curator notes from the deck's Pitch Accent Notes field
     accent_json TEXT,             -- language-module target data (accent number, moras, source)
     target_json TEXT,             -- cached target F0 analysis (computed lazily)
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_items_deck ON items(deck_id);
+CREATE TABLE IF NOT EXISTS user_known_items (
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    synced_at REAL NOT NULL,
+    PRIMARY KEY (user_id, item_id)
+);
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS attempts (
     id INTEGER PRIMARY KEY,
     item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
@@ -71,6 +85,37 @@ CREATE TABLE IF NOT EXISTS srs_state (
 
 def _migrate(conn: sqlite3.Connection) -> None:
     """In-place upgrades for databases created by earlier versions."""
+    deck_info = list(conn.execute("PRAGMA table_info(decks)"))
+    deck_cols = {r[1] for r in deck_info}
+    if deck_cols and "is_builtin" not in deck_cols:
+        conn.execute("ALTER TABLE decks ADD COLUMN is_builtin INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
+    # user_id must be nullable now (the built-in deck has no owner)
+    if any(r[1] == "user_id" and r[3] for r in deck_info):
+        conn.executescript("""
+            CREATE TABLE decks_v2 (
+                id INTEGER PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id),
+                name TEXT NOT NULL,
+                language TEXT NOT NULL,
+                item_count INTEGER NOT NULL DEFAULT 0,
+                is_builtin INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL
+            );
+            INSERT INTO decks_v2 (id, user_id, name, language, item_count, is_builtin, created_at)
+                SELECT id, user_id, name, language, item_count,
+                       COALESCE(is_builtin, 0), created_at FROM decks;
+            DROP TABLE decks;
+            ALTER TABLE decks_v2 RENAME TO decks;
+        """)
+        conn.commit()
+
+    item_cols = {r[1] for r in conn.execute("PRAGMA table_info(items)")}
+    for col in ("word_meaning", "sentence_meaning", "pitch_notes"):
+        if item_cols and col not in item_cols:
+            conn.execute(f"ALTER TABLE items ADD COLUMN {col} TEXT")
+    conn.commit()
+
     cols = {r[1] for r in conn.execute("PRAGMA table_info(srs_state)")}
     if cols and "mode" not in cols:
         # per-mode scheduling: backfill mode from each item's latest attempt

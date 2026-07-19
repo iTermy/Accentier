@@ -1,12 +1,16 @@
 # Accentier
 
-Shadowing practice with real pitch feedback, built around your Anki immersion workflow.
-Upload your mining deck, listen to the native audio you mined, record yourself shadowing
-it, and see your pitch contour overlaid on the native one — with divergences highlighted,
+Pitch-accent shadowing practice for the **Kaishi 1.5k** deck. Listen to the native
+audio for each of the 1,500 core words and sentences, record yourself shadowing it,
+and see your pitch contour overlaid on the native one — with divergences highlighted,
 a score, and an SRS schedule that brings items back for review.
 
-Initial focus: **Japanese pitch accent**. The analysis layer is language-modular; the
-included Italian deck runs in a generic intonation-contour mode through the same pipeline.
+The app is built *around* this one deck, and leans into that: every word has a
+curated pitch accent (parsed from the deck's own Pitch Accent field — 100%
+coverage), full-sentence accent diagrams with phrase merging and downstep, word
+and sentence meanings, and consistent studio-quality audio. If you're partway
+through Kaishi in Anki, you can sync your progress and practice only the words
+you've already studied.
 
 ## Quickstart
 
@@ -28,10 +32,11 @@ npm run build
 
 For frontend development instead: `npm run dev` (Vite on :5173, proxies `/api` to :8000).
 
-Then open **http://127.0.0.1:8000**, register an account, and drop an `.apkg`
-(export from Anki with *"Include media"* checked) onto the dashboard.
+On first start the server seeds the built-in deck from `resources/Kaishi 1.5k.apkg`
+(one-time, ~2 min: audio extraction + accent analysis for 1,500 items). Then open
+**http://127.0.0.1:8000**, register an account, and start shadowing.
 
-Tests (run against the real decks in `/resources`):
+Tests (run against the real deck in `/resources`):
 
 ```powershell
 cd server
@@ -44,16 +49,18 @@ cd server
 server/  FastAPI + SQLite — API, DSP, language modules, serves web/dist
   app/
     apkg.py           .apkg parser (modern zstd/protobuf format AND legacy schema-11)
+    seed.py           imports the built-in Kaishi deck at startup (idempotent, versioned)
+    kaishi_pitch.py   parser for Kaishi's curated Pitch Accent field (Migaku-style HTML)
     audio.py          decode (mp3/wav/ogg/flac via libsndfile) → mono 16 kHz
     dsp/yin.py        YIN F0 tracker (NumPy implementation of the 2002 paper)
     dsp/align.py      DTW alignment + divergence scoring between contours
-    languages/        LanguageModule interface; japanese.py, generic.py
+    languages/        LanguageModule interface; japanese.py (+ generic.py blueprint)
     kanjium.py        Kanjium pitch-accent DB loader (vendored, 124k entries)
     pitchdict.py      optional Yomitan pitch dictionary loader (data/pitch_dicts/*.zip)
     alignment.py      estimated word/mora spans over the target audio
     analysis.py       target/attempt analysis orchestration + caching
     srs.py            SM-2-style scheduler driven by shadowing scores (per mode)
-    routers/          auth, decks/upload/media, items/attempts/review/stats
+    routers/          auth, deck/media/progress-sync, items/attempts/review/stats
   vendor/kanjium_accents.txt   pitch-accent ground truth (see below)
   data/               runtime: SQLite DB, extracted media, recordings (gitignored)
 web/     Vite + React + TS — canvas contour chart, SVG mora diagrams, recorder
@@ -116,21 +123,33 @@ them, and aberrant voicing onset/offset frames (plosive transients, final creak)
 trimmed per voiced run — so the chart no longer spikes at the start or nosedives at
 the end of your line.
 
-**Target accent data** — five tiers, best available wins:
-1. the deck's own Yomitan `PitchPosition` field (653/900 notes in the JP test deck),
-2. any **Yomitan pitch dictionary zips** you drop into `server/data/pitch_dicts/`
-   (e.g. the NHK 2016 accent dictionary) — loaded lazily, keyed by surface+reading;
-   these are curated sources so they win over the aggregate,
-3. the vendored **Kanjium** accent database (open source, the same data Yomitan
-   pitch dictionaries are built from), keyed by surface+reading with lemma fallback
-   via the UniDic tokenizer,
-4. for words none cover: the accent is **estimated from the word audio itself**
-   (mora-binned pitch means, largest downstep wins; heiban and odaka are
-   indistinguishable in isolation so "no drop" maps to [0]) — cached and clearly
-   labeled *est.* in the UI,
-5. always: the native audio's own F0 contour, which is what the recording is
-   actually compared against. The dictionary data drives the schematic mora diagram;
+**Target accent data** — the deck's curated field covers everything, with
+dictionaries as corroboration:
+1. **Kaishi's own Pitch Accent field** — every one of the 1,500 notes carries a
+   hand-curated pattern as Migaku-style HTML (overline = high, border tick =
+   downstep, ・-separated alternates, ° nasalization). `kaishi_pitch.py` parses all
+   three HTML variants found in the deck back into accent numbers: 100% coverage,
+   and of the 1,477 words the pitch dictionaries also know, 1,466 agree (the 11
+   differences are deliberate curation, e.g. ところ marked odaka; the deck wins
+   and the dictionary value is shown as an alternate).
+2. For *other words inside the example sentences*: Yomitan pitch dictionary zips in
+   `server/data/pitch_dicts/` (NHK 2016 etc.), then the vendored **Kanjium**
+   database, keyed by surface+reading with lemma fallback via UniDic. Particles,
+   auxiliaries and suffixes are treated as accent-neutral attachments (looking
+   them up would hit homograph nouns — は → 歯).
+3. Always: the native audio's own F0 contour, which is what the recording is
+   actually compared against. The curated data drives the schematic diagrams;
    the audio drives the score.
+
+**Sentence melody diagrams** — the per-word citation patterns are merged into
+*accent phrases* (content word + trailing particles/auxiliaries/suffixes), the
+phrase accent applies the connected-speech behavior of the common auxiliaries
+(ます always takes the accent: かえりま↓す; です after a heiban phrase: みずで↓す;
+ない pulls the drop onto the preceding mora), in-context readings come from the
+deck's furigana (私 = わたし, not UniDic's わたくし), and successive accented
+phrases **step down** in height with punctuation resetting the intonation unit.
+Rule-based Tokyo prosody, labeled as generated in the UI — approximate by nature,
+but structurally faithful: where the drops are, and which phrase sits lower.
 
 **.apkg parsing** — handles the current Anki export format (zstd-compressed
 `collection.anki21b`, protobuf media map — parsed with a minimal built-in varint
@@ -148,9 +167,9 @@ pitch tracker.
 `languages/base.py` defines the interface: a module owns target-pattern derivation
 (`build_accent_data`), score weighting, and feedback wording. The DSP layer is
 language-neutral. `japanese.py` adds mora segmentation, accent-number → H/L pattern
-rules, Kanjium/deck lookups, and pitch-accent-specific coaching. `generic.py` is the
-contour-only fallback (used by the Italian deck) and the blueprint for future modules
-(English stress placement, Mandarin tones, …). Upload auto-detects language by script.
+rules, accent-phrase grouping, deck/dictionary lookups, and pitch-accent-specific
+coaching. `generic.py` (contour-only) remains as the blueprint for future modules —
+the app currently ships Japanese-only, built around Kaishi 1.5k.
 
 ### Persistence & review
 
@@ -166,10 +185,21 @@ The dashboard surfaces the due queue; Review mode walks through it.
 
 ### Studying a deck
 
-The deck page is a workbench: filter (practiced / due / accent category / search),
-sort (deck order, length, accent number, best score, due date), then **Start
-studying** walks the exact list you built — from the start, from the end, or
-shuffled — with progress and prev/next. Sessions survive a refresh.
+The deck page is a workbench: filter (practiced / due / accent category / search —
+plus *studied in Anki* once you've synced), sort (deck order, length, accent
+number, best score, due date), then **Start studying** walks the exact list you
+built — from the start, from the end, or shuffled — with progress and prev/next.
+Sessions survive a refresh.
+
+### Syncing your Anki progress
+
+If you're partway through Kaishi in Anki, export the deck (*.apkg*, **"Include
+scheduling information" checked**, media not needed) and upload it from the
+dashboard. Cards with actual study history (Anki card type ≠ new) mark their words
+as *studied* — matched by Anki note id, which is stable across imports of the
+shared deck, with expression fallback for rebuilt decks. The deck page then offers
+a "studied in Anki" filter so you can shadow only words you've already met.
+Re-sync any time; syncing replaces the previous set.
 
 ### Drilling a sentence
 
@@ -184,27 +214,30 @@ history and review schedule, since it's drill work on a fragment.
 
 ## Known limitations / deferred (deliberately)
 
-- **Sentence pitch diagram is word-by-word dictionary patterns**, not a true
-  sentence melody — accent-phrase merging and downstep are not modeled (labeled as
-  such in the UI). The *audio contour* target is unaffected; this only concerns the
-  schematic diagram.
+- **Sentence melody diagrams are rule-based**, not a full prosody model: verb/
+  adjective conjugation accent shifts beyond ます/です/ない are approximated by the
+  lemma's citation accent, numbers are skipped (no digit-reading), and downstep is
+  schematic (fixed notches, not phonetic scaling). Labeled as generated in the UI;
+  the *audio contour* target is unaffected.
 - **Word positions on the chart are estimates** (energy chunks + mora-proportional
   spans), not forced alignment. Good enough to orient; a real aligner would let
   divergences name the exact mora you missed and remains the top candidate for the
   next iteration.
-- Word-mode audio (Yomitan dictionary audio) and sentence-mode audio are analyzed
-  identically; there's no per-word extraction from sentence audio.
-- Audio-based accent estimates can't tell heiban from odaka in isolation, and trust
-  the even-mora-split assumption; they're labeled *est.* everywhere.
+- Word-mode audio and sentence-mode audio are analyzed identically; there's no
+  per-word extraction from sentence audio.
+- Progress sync needs an export **with scheduling information** — a fresh deck
+  download looks all-new and is rejected with an explanatory message.
 - Auth is minimal: sessions never expire, no rate limiting, no password reset.
-- Re-uploading a deck creates a new deck (no merge/dedupe). Deleting a deck now
-  cleans up its media and attempt recordings.
-- Legacy .apkg support is tested against a synthetic deck, not a real old export.
-- Kanjium data is vendored as-is; homograph disambiguation takes the first listed
-  accent when the deck doesn't specify one.
+- Mining-deck upload (arbitrary .apkg import, multi-deck, the generic/Italian
+  intonation mode) was removed in the Kaishi pivot — audio quality and field
+  layouts varied too much to give reliable feedback. The parser and the language-
+  module seam remain, so it can return once the core experience is solid.
 
 ## Data credits
 
+- [Kaishi 1.5k](https://github.com/donkuri/Kaishi) (CC BY-SA 4.0) — the built-in
+  deck: 1,500 words, sentences, native audio, meanings and curated pitch accents.
+  `resources/Kaishi 1.5k.apkg` is the unmodified published deck.
 - [Kanjium](https://github.com/mifunetoshiro/kanjium) pitch-accent database.
 - [UniDic](https://clrd.ninjal.ac.jp/unidic/) via `fugashi` + `unidic-lite` for
   tokenization and readings.

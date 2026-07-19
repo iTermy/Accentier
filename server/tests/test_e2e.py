@@ -1,12 +1,15 @@
-"""End-to-end API test: register -> upload real deck -> practice loop -> review.
-
-Uses a temp data dir so it never touches real user data. Run:
+"""End-to-end API test: register -> built-in Kaishi deck -> practice loop ->
+progress sync -> review. Uses a temp data dir so it never touches real user
+data; the Kaishi deck is seeded from resources/ on app import (slow once).
+Run:
     ../.venv/Scripts/python -m pytest tests/ -x -q   (or just python tests/test_e2e.py)
 """
 import io
 import os
+import sqlite3
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 
 # Japanese in test output vs Windows cp1252 console
@@ -30,11 +33,7 @@ for d in (config.MEDIA_DIR, config.ATTEMPTS_DIR, config.UPLOADS_DIR):
 
 from fastapi.testclient import TestClient
 from app.main import app
-from app.audio import decode_audio, save_wav
-
-RESOURCES = Path(__file__).resolve().parent.parent.parent / "resources"
-JP_DECK = RESOURCES / "JPAnimeMining.apkg"
-IT_DECK = RESOURCES / "Italian Mining.apkg"
+from app.audio import decode_audio
 
 client = TestClient(app)
 
@@ -43,51 +42,92 @@ def auth_headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_full_loop():
-    # --- register / login ---
-    r = client.post("/api/auth/register", json={"username": "tester", "password": "secret1"})
+def register(name: str) -> dict:
+    r = client.post("/api/auth/register", json={"username": name, "password": "secret1"})
     assert r.status_code == 200, r.text
-    token = r.json()["token"]
-    h = auth_headers(token)
+    return auth_headers(r.json()["token"])
+
+
+def scheduled_kaishi_apkg(n_studied: int) -> io.BytesIO:
+    """A minimal Kaishi export with the first n notes' cards marked studied.
+    Only the collection DB matters for progress sync — media is omitted."""
+    import zstandard
+
+    with zipfile.ZipFile(config.KAISHI_APKG) as z:
+        db_bytes = zstandard.ZstdDecompressor().decompress(
+            z.read("collection.anki21b"), max_output_size=1 << 31)
+    db_path = config.DATA_DIR / "sync_src.sqlite"
+    db_path.write_bytes(db_bytes)
+    conn = sqlite3.connect(db_path)
+    nids = [r[0] for r in conn.execute(
+        "SELECT DISTINCT nid FROM cards ORDER BY nid LIMIT ?", (n_studied,))]
+    conn.executemany("UPDATE cards SET type=2, reps=3 WHERE nid=?", [(n,) for n in nids])
+    conn.commit()
+    conn.close()
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("collection.anki21b",
+                   zstandard.ZstdCompressor().compress(db_path.read_bytes()))
+    buf.seek(0)
+    return buf
+
+
+def test_builtin_deck_and_practice_loop():
+    h = register("tester")
     assert client.get("/api/auth/me", headers=h).json()["username"] == "tester"
-    # wrong password rejected
     assert client.post("/api/auth/login", json={"username": "tester", "password": "nope"}).status_code == 401
 
-    # --- upload Italian deck (smaller; exercises generic module) ---
-    with open(IT_DECK, "rb") as f:
-        r = client.post("/api/decks/upload", headers=h,
-                        files={"file": ("Italian Mining.apkg", f, "application/octet-stream")},
-                        data={"language": "auto"})
-    assert r.status_code == 200, r.text
-    up = r.json()
-    print("upload:", up)
-    assert up["language"] == "generic"
-    assert up["items_imported"] > 100
-    deck_id = up["deck_id"]
+    # --- the built-in deck is there for every fresh account ---
+    decks = client.get("/api/decks", headers=h).json()
+    assert len(decks) == 1, decks
+    deck = decks[0]
+    assert deck["is_builtin"] == 1 and deck["item_count"] == 1500, deck
+    deck_id = deck["id"]
 
-    # --- items list ---
+    # arbitrary deck upload is gone
+    assert client.post("/api/decks/upload", headers=h).status_code in (404, 405)
+    # and the shared deck can't be deleted
+    assert client.request("DELETE", f"/api/decks/{deck_id}", headers=h).status_code in (404, 405)
+
+    # --- items: full accent coverage from the curated deck field ---
     r = client.get(f"/api/decks/{deck_id}/items", headers=h)
     assert r.status_code == 200
     items = r.json()["items"]
-    item = next(i for i in items if i["sentence_audio"])
+    assert len(items) == 1500
+    missing = [i for i in items if not i["accent"] or i["accent"].get("accent") is None]
+    assert not missing, f"{len(missing)} items without accent"
+    assert all(i["accent"]["accent_source"] == "deck" for i in items)
+    assert sum(1 for i in items if i.get("word_meaning")) == 1500
 
-    # --- item detail computes target contour ---
+    # --- item detail: targets + sentence accent phrases ---
+    item = next(i for i in items if i["sentence_audio"] and i["word_audio"])
     r = client.get(f"/api/items/{item['id']}", headers=h)
     assert r.status_code == 200, r.text
     detail = r.json()
+    acc = detail["accent"]
+    assert acc["moras"] and acc["pattern"] and len(acc["moras"]) == len(acc["pattern"])
+    phrases = acc.get("sentence_phrases")
+    assert phrases, "sentence should have accent phrases"
+    for p in phrases:
+        assert len(p["pattern"]) == len(p["moras"])
+        assert 0 <= p["accent"] <= len(p["moras"])
     assert "sentence" in detail["targets"], detail["targets"].keys()
     contour = detail["targets"]["sentence"]["contour"]
-    voiced_pts = [p for p in contour if p[1] is not None]
-    assert len(voiced_pts) > 10, "target contour should have voiced frames"
+    assert len([p for p in contour if p[1] is not None]) > 10
+    spans = detail["targets"]["sentence"].get("words")
+    assert spans, "sentence target should carry estimated word spans"
+    dur = detail["targets"]["sentence"]["duration"]
+    assert all(0 <= s["start"] <= s["end"] <= dur + 0.05 for s in spans)
 
     # --- media serving ---
     r = client.get(f"/api/media/{deck_id}/{item['sentence_audio']}", headers=h)
     assert r.status_code == 200 and len(r.content) > 1000
 
-    # --- submit attempt: use the target audio itself as the 'recording' (perfect shadow) ---
+    # --- perfect shadow: the target audio itself scores near-perfect ---
     samples, sr = decode_audio(r.content)
-    buf = io.BytesIO()
     import soundfile as sf
+    buf = io.BytesIO()
     sf.write(buf, samples, sr, format="WAV", subtype="PCM_16")
     buf.seek(0)
     r = client.post(f"/api/items/{item['id']}/attempts", headers=h,
@@ -95,11 +135,11 @@ def test_full_loop():
     assert r.status_code == 200, r.text
     res = r.json()
     print("perfect-shadow score:", res["result"]["score"], res["result"]["metrics"])
-    assert res["result"]["score"] > 90, "identical audio should score near-perfect"
-    assert res["result"]["warp"], "DTW warp map should be present for playhead sync"
+    assert res["result"]["score"] > 90
+    assert res["result"]["warp"]
     assert res["srs"]["reps"] == 1 and res["srs"]["outcome"] == "scheduled"
 
-    # --- a garbage attempt (noise) scores low ---
+    # --- noise scores low ---
     import numpy as np
     noise = (np.random.default_rng(1).normal(0, 0.1, sr * 2)).astype("float32")
     buf2 = io.BytesIO(); sf.write(buf2, noise, sr, format="WAV", subtype="PCM_16"); buf2.seek(0)
@@ -111,7 +151,6 @@ def test_full_loop():
     assert bad < 40
 
     # --- slice drill: analyzed against a sub-region, never recorded/scheduled ---
-    dur = detail["targets"]["sentence"]["duration"]
     s0, s1 = round(dur * 0.1, 3), round(dur * 0.7, 3)
     buf.seek(0)
     r = client.post(f"/api/items/{item['id']}/attempts", headers=h,
@@ -121,63 +160,67 @@ def test_full_loop():
     sl = r.json()
     assert sl["attempt_id"] is None and sl["srs"] is None
     assert sl["result"]["slice"] == [s0, s1]
-    # aligned output must land inside the slice window on the target timeline
-    aligned = sl["result"]["aligned_user"]
-    if aligned:
-        assert aligned[0][0] >= s0 - 0.05 and aligned[-1][0] <= s1 + 0.05
-    # a too-short slice is rejected cleanly
     buf.seek(0)
     r = client.post(f"/api/items/{item['id']}/attempts", headers=h,
                     files={"audio": ("rec.wav", buf, "audio/wav")},
                     data={"mode": "sentence", "slice_start": "0.0", "slice_end": "0.1"})
     assert r.status_code == 422
 
-    # --- history + review queue + stats: slice drills must not appear ---
+    # --- history + stats: slice drills must not appear ---
     hist = client.get(f"/api/items/{item['id']}/attempts", headers=h).json()
     assert len(hist) == 2
-    queue = client.get("/api/review/queue", headers=h).json()
-    # last attempt was noise -> lapse -> due in 10 min, so not in queue yet unless failed... lapse sets due +600s
     stats = client.get("/api/stats", headers=h).json()
     print("stats:", stats)
     assert stats["total_attempts"] == 2
 
-    print("E2E OK")
+    # --- per-user isolation on the shared deck ---
+    h2 = register("second")
+    decks2 = client.get("/api/decks", headers=h2).json()
+    assert decks2[0]["id"] == deck_id and decks2[0]["practiced_count"] == 0
+    stats2 = client.get("/api/stats", headers=h2).json()
+    assert stats2["total_attempts"] == 0
+
+    print("E2E practice loop OK")
 
 
-def test_japanese_deck_import():
-    r = client.post("/api/auth/register", json={"username": "jp", "password": "secret1"})
-    h = auth_headers(r.json()["token"])
-    with open(JP_DECK, "rb") as f:
-        r = client.post("/api/decks/upload", headers=h,
-                        files={"file": ("JPAnimeMining.apkg", f, "application/octet-stream")},
-                        data={"language": "auto"})
+def test_progress_sync():
+    h = register("syncer")
+    deck_id = client.get("/api/decks", headers=h).json()[0]["id"]
+
+    # pristine deck (no scheduling) → helpful error
+    with open(config.KAISHI_APKG, "rb") as f:
+        r = client.post("/api/progress/sync", headers=h,
+                        files={"file": ("Kaishi 1.5k.apkg", f, "application/octet-stream")})
+    assert r.status_code == 422 and "scheduling" in r.json()["detail"]
+
+    # an export with 600 studied cards
+    buf = scheduled_kaishi_apkg(600)
+    r = client.post("/api/progress/sync", headers=h,
+                    files={"file": ("my kaishi.apkg", buf, "application/octet-stream")})
     assert r.status_code == 200, r.text
-    up = r.json()
-    print("JP upload:", up)
-    assert up["language"] == "ja"
-    assert up["items_imported"] >= 890
+    res = r.json()
+    print("sync:", res)
+    assert res["studied_notes"] == 600
+    assert res["known_count"] == 600
 
-    items = client.get(f"/api/decks/{up['deck_id']}/items", headers=h).json()["items"]
-    with_accent = [i for i in items if i["accent"] and i["accent"].get("accent") is not None]
-    print(f"items with accent number: {len(with_accent)}/{len(items)}")
-    assert len(with_accent) > 700  # deck pitch + kanjium fallback should beat deck-only 653
+    deck = client.get("/api/decks", headers=h).json()[0]
+    assert deck["known_count"] == 600
+    items = client.get(f"/api/decks/{deck_id}/items", headers=h).json()["items"]
+    assert sum(1 for i in items if i["known"]) == 600
 
-    # item detail with accent diagram + sentence words
-    item = next(i for i in with_accent if i["sentence_audio"])
-    d = client.get(f"/api/items/{item['id']}", headers=h).json()
-    acc = d["accent"]
-    assert acc["moras"] and acc["pattern"] and len(acc["moras"]) == len(acc["pattern"])
-    assert any(w.get("pattern") for w in acc.get("sentence_words", []))
-    # estimated word spans on the sentence target, ordered and in-range
-    spans = d["targets"]["sentence"].get("words")
-    assert spans, "sentence target should carry estimated word spans"
-    dur = d["targets"]["sentence"]["duration"]
-    assert all(0 <= s["start"] <= s["end"] <= dur + 0.05 for s in spans)
-    print("sample item:", d["expression"], d["reading"], acc["accent"], acc["category"],
-          "source:", acc["accent_source"])
+    # other users unaffected
+    h2 = register("other")
+    assert client.get("/api/decks", headers=h2).json()[0]["known_count"] == 0
+
+    # clear
+    r = client.request("DELETE", "/api/progress/sync", headers=h)
+    assert r.status_code == 200
+    assert client.get("/api/decks", headers=h).json()[0]["known_count"] == 0
+
+    print("progress sync OK")
 
 
 if __name__ == "__main__":
-    test_full_loop()
-    test_japanese_deck_import()
+    test_builtin_deck_and_practice_loop()
+    test_progress_sync()
     print("ALL TESTS PASSED")

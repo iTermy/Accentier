@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ItemSummary, api } from "../api";
 
-type Filter = "all" | "unpracticed" | "practiced" | "due";
+type Filter = "all" | "studied" | "unpracticed" | "practiced" | "due";
 type AccentFilter = "any" | "heiban" | "atamadaka" | "nakadaka" | "odaka" | "unknown";
 type SortKey = "order" | "length" | "accent" | "best" | "due" | "attempts";
 type StudyOrder = "start" | "end" | "shuffle";
@@ -52,6 +52,7 @@ export default function DeckPage() {
     if (!data) return [];
     const now = Date.now() / 1000;
     let list = data.items;
+    if (filter === "studied") list = list.filter((i) => i.known);
     if (filter === "unpracticed") list = list.filter((i) => !i.attempt_count);
     if (filter === "practiced") list = list.filter((i) => i.attempt_count > 0);
     if (filter === "due") list = list.filter((i) => i.due_at !== null && i.due_at <= now);
@@ -109,17 +110,25 @@ export default function DeckPage() {
 
   if (!data) return <span className="spin" />;
   const now = Date.now() / 1000;
+  const hasKnown = data.items.some((i) => i.known);
 
   return (
     <div>
       <h2>{data.deck.name}</h2>
       <div style={{ display: "flex", gap: 10, margin: "12px 0", flexWrap: "wrap", alignItems: "center" }}>
         <div className="mode-toggle">
-          {(["all", "unpracticed", "practiced", "due"] as Filter[]).map((f) => (
-            <button key={f} className={filter === f ? "on" : ""} onClick={() => setFilter(f)}>
-              {f}
-            </button>
-          ))}
+          {(["all", "unpracticed", "practiced", "due"] as Filter[])
+            .flatMap((f, idx) => (idx === 1 && hasKnown ? (["studied", f] as Filter[]) : [f]))
+            .map((f) => (
+              <button
+                key={f}
+                className={filter === f ? "on" : ""}
+                onClick={() => setFilter(f)}
+                title={f === "studied" ? "Words marked as studied from your synced Anki progress" : undefined}
+              >
+                {f === "studied" ? "studied in Anki" : f}
+              </button>
+            ))}
         </div>
         <select value={accentFilter} onChange={(e) => setAccentFilter(e.target.value as AccentFilter)}>
           <option value="any">any accent</option>
@@ -177,6 +186,7 @@ export default function DeckPage() {
               <th>Expression</th>
               <th>Reading</th>
               <th>Accent</th>
+              <th>Meaning</th>
               <th>Sentence</th>
               <th>Best</th>
               <th>Status</th>
@@ -199,7 +209,10 @@ export default function DeckPage() {
                     <span className="hint">—</span>
                   )}
                 </td>
-                <td className="jp" style={{ maxWidth: 380, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--ink-2)" }}>
+                <td style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--ink-2)" }}>
+                  {i.word_meaning || ""}
+                </td>
+                <td className="jp" style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--ink-2)" }}>
                   {i.sentence}
                 </td>
                 <td>

@@ -62,6 +62,8 @@ export interface Deck {
   language: string;
   item_count: number;
   practiced_count: number;
+  known_count: number;
+  is_builtin: number;
   created_at: number;
 }
 
@@ -75,13 +77,25 @@ export interface WordAccent {
   content?: boolean;
 }
 
+export interface AccentPhrase {
+  surface: string;
+  moras: string[];
+  accent: number;
+  pattern: number[];
+  level: number; // downstep level: 0 = phrase-reset height, higher = lower plateau
+  words: { surface: string; at: number }[];
+  break_after: boolean;
+}
+
 export interface AccentData {
   moras: string[];
   accent: number | null;
   accent_source: string | null;
+  alternates?: number[];
   pattern?: number[];
   category?: string;
   sentence_words?: WordAccent[];
+  sentence_phrases?: AccentPhrase[];
 }
 
 export interface ItemSummary {
@@ -91,6 +105,9 @@ export interface ItemSummary {
   sentence: string;
   sentence_audio: string;
   word_audio: string;
+  word_meaning?: string;
+  pitch_notes?: string;
+  known: boolean;
   accent: AccentData | null;
   due_at: number | null;
   interval_days: number | null;
@@ -126,6 +143,9 @@ export interface ItemDetail {
   sentence: string;
   sentence_audio: string;
   word_audio: string;
+  word_meaning?: string | null;
+  sentence_meaning?: string | null;
+  pitch_notes?: string | null;
   accent: AccentData | null;
   targets: { sentence?: TargetAnalysis; word?: TargetAnalysis };
   srs: Record<string, any>;

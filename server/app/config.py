@@ -10,6 +10,7 @@ UPLOADS_DIR = DATA_DIR / "uploads"      # temp storage for incoming .apkg files
 PITCH_DICTS_DIR = DATA_DIR / "pitch_dicts"  # optional user-supplied Yomitan pitch dict zips
 VENDOR_DIR = SERVER_DIR / "vendor"
 KANJIUM_PATH = VENDOR_DIR / "kanjium_accents.txt"
+KAISHI_APKG = SERVER_DIR.parent / "resources" / "Kaishi 1.5k.apkg"
 WEB_DIST = SERVER_DIR.parent / "web" / "dist"
 
 # Analysis parameters

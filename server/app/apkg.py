@@ -55,6 +55,9 @@ FIELD_CANDIDATES: dict[str, list[str]] = {
     "pitch_position": ["pitchposition", "pitchnumber", "accentposition", "pitchaccent",
                        "pitch", "accent", "ピッチ", "アクセント"],
     "pitch_categories": ["pitchcategories", "pitchcategory", "accentcategory", "pitchtype"],
+    "pitch_notes": ["pitchaccentnotes", "accentnotes", "pitchnotes"],
+    "word_meaning": ["wordmeaning", "meaning", "definition", "gloss", "意味"],
+    "sentence_meaning": ["sentencemeaning", "sentencetranslation", "translation", "英訳"],
 }
 
 # separators people put in field names; stripped before matching
@@ -75,6 +78,11 @@ class ParsedNote:
     word_audio: str = ""
     pitch_position: int | None = None
     pitch_categories: str = ""
+    pitch_html: str = ""       # raw pitch field (Migaku-style HTML in Kaishi)
+    sentence_furigana: str = ""  # raw 漢字[かんじ] markup for reading correction
+    pitch_notes: str = ""
+    word_meaning: str = ""
+    sentence_meaning: str = ""
 
 
 @dataclass
@@ -229,6 +237,18 @@ class ApkgArchive:
             Path(self._tmp_db).unlink(missing_ok=True)
 
 
+def studied_note_ids(conn: sqlite3.Connection) -> set[int]:
+    """Note ids with at least one card the user has actually studied.
+
+    Card type: 0=new, 1=learning, 2=review, 3=relearning. Anki only keeps
+    these when the deck was exported with scheduling information included —
+    a fresh deck download (or a "no scheduling" export) is all type 0."""
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "cards" not in tables:
+        return set()
+    return {r[0] for r in conn.execute("SELECT DISTINCT nid FROM cards WHERE type != 0 OR reps > 0")}
+
+
 def _load_notetype_fields(conn: sqlite3.Connection) -> dict[int, list[str]]:
     """Return {notetype_id: [field names in order]} for both schema generations."""
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -304,6 +324,7 @@ def parse_apkg(path: str | Path, deck_name: str | None = None) -> tuple[ParsedDe
             if "placeholder" in expression.lower() or "placeholder" in sentence_plain.lower():
                 continue
 
+            raw_pitch = get("pitch_position")
             note = ParsedNote(
                 note_id=row["id"],
                 expression=expression or sentence_plain[:40],
@@ -311,8 +332,13 @@ def parse_apkg(path: str | Path, deck_name: str | None = None) -> tuple[ParsedDe
                 sentence=sentence_plain,
                 sentence_audio=sentence_audio,
                 word_audio=word_audio,
-                pitch_position=_parse_pitch_position(get("pitch_position")),
+                pitch_position=_parse_pitch_position(raw_pitch),
                 pitch_categories=strip_html(get("pitch_categories")),
+                pitch_html=raw_pitch,
+                sentence_furigana=strip_html(get("sentence_furigana")),
+                pitch_notes=strip_html(get("pitch_notes")),
+                word_meaning=strip_html(get("word_meaning")),
+                sentence_meaning=strip_html(get("sentence_meaning")),
             )
             deck.notes.append(note)
 

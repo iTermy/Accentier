@@ -28,7 +28,7 @@ function TopBar({ onLogout }: { onLogout: () => void }) {
         <>
           <nav>
             <NavLink to="/" end>
-              Decks
+              Home
             </NavLink>
             <NavLink to="/review">Review</NavLink>
           </nav>

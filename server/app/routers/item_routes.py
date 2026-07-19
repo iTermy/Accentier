@@ -17,11 +17,11 @@ MAX_ATTEMPT_BYTES = 30 * 1024 * 1024
 
 def _load_item(item_id: int, user_id: int) -> dict:
     row = get_conn().execute(
-        """SELECT i.*, d.language, d.user_id AS owner, d.name AS deck_name
+        """SELECT i.*, d.language, d.user_id AS owner, d.is_builtin, d.name AS deck_name
            FROM items i JOIN decks d ON d.id = i.deck_id WHERE i.id=?""",
         (item_id,),
     ).fetchone()
-    if not row or row["owner"] != user_id:
+    if not row or not (row["is_builtin"] or row["owner"] == user_id):
         raise HTTPException(404, "Item not found")
     return row_to_dict(row, ("accent_json", "target_json"))
 
@@ -48,6 +48,9 @@ def item_detail(item_id: int, user: dict = auth.CurrentUser):
         "sentence": item["sentence"],
         "sentence_audio": item["sentence_audio"],
         "word_audio": item["word_audio"],
+        "word_meaning": item.get("word_meaning"),
+        "sentence_meaning": item.get("sentence_meaning"),
+        "pitch_notes": item.get("pitch_notes"),
         "accent": item["accent"],
         "targets": targets,
         "srs": {r["mode"]: dict(r) for r in srs_rows},
@@ -118,7 +121,7 @@ def review_queue(user: dict = auth.CurrentUser):
            FROM srs_state s
            JOIN items i ON i.id = s.item_id
            JOIN decks d ON d.id = i.deck_id
-           WHERE s.user_id=? AND s.due_at <= ? AND d.user_id=?
+           WHERE s.user_id=? AND s.due_at <= ? AND (d.is_builtin=1 OR d.user_id=?)
            ORDER BY s.due_at LIMIT 100""",
         (user["id"], now(), user["id"]),
     ).fetchall()

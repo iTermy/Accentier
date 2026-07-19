@@ -13,9 +13,8 @@ interface Stats {
 export default function Dashboard() {
   const [decks, setDecks] = useState<Deck[] | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [uploadMsg, setUploadMsg] = useState("");
-  const [drag, setDrag] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
 
@@ -25,27 +24,37 @@ export default function Dashboard() {
   };
   useEffect(load, []);
 
-  const upload = async (file: File) => {
+  const deck = decks?.[0] ?? null;
+
+  const syncProgress = async (file: File) => {
     if (!file.name.toLowerCase().endsWith(".apkg")) {
-      setUploadMsg("Please choose an .apkg file exported from Anki.");
+      setSyncMsg("Please choose an .apkg file exported from Anki.");
       return;
     }
-    setUploading(true);
-    setUploadMsg(`Importing ${file.name} — parsing notes and extracting audio…`);
+    setSyncing(true);
+    setSyncMsg("Reading your Anki export…");
     try {
       const form = new FormData();
       form.append("file", file);
-      form.append("language", "auto");
-      const res = await api<any>("/api/decks/upload", { method: "POST", body: form });
-      setUploadMsg(
-        `Imported ${res.items_imported} items (${res.language === "ja" ? "Japanese" : "generic"} mode, ${res.media_extracted} audio files).`
+      const res = await api<{ studied_notes: number; known_count: number }>(
+        "/api/progress/sync",
+        { method: "POST", body: form }
+      );
+      setSyncMsg(
+        `Matched ${res.known_count} studied words. Use the “studied” filter on the deck page to practice just those.`
       );
       load();
     } catch (e: any) {
-      setUploadMsg(`Import failed: ${e.message}`);
+      setSyncMsg(`Sync failed: ${e.message}`);
     } finally {
-      setUploading(false);
+      setSyncing(false);
     }
+  };
+
+  const clearProgress = async () => {
+    await api("/api/progress/sync", { method: "DELETE" });
+    setSyncMsg("Anki progress cleared — all 1,500 words are shown again.");
+    load();
   };
 
   return (
@@ -85,79 +94,66 @@ export default function Dashboard() {
       )}
 
       <div className="panel">
-        <h2>Your decks</h2>
         {decks === null ? (
           <span className="spin" />
-        ) : decks.length === 0 ? (
-          <p className="hint">No decks yet — upload your Anki mining deck below to get started.</p>
-        ) : (
-          <div className="grid" style={{ gap: 10, marginTop: 8 }}>
-            {decks.map((d) => (
-              <div className="panel deck-card" key={d.id} style={{ background: "var(--panel-2)" }}>
-                <div>
-                  <b>{d.name}</b>{" "}
-                  <span className="chip">{d.language === "ja" ? "Japanese · pitch accent" : "intonation"}</span>
-                  <div className="meta">
-                    {d.item_count} items · {d.practiced_count} practiced
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={() => navigate(`/deck/${d.id}`)}>Open</button>
-                  <button
-                    className="ghost"
-                    onClick={async () => {
-                      if (confirm(`Delete deck "${d.name}" and all its progress?`)) {
-                        await api(`/api/decks/${d.id}`, { method: "DELETE" });
-                        load();
-                      }
-                    }}
-                  >
-                    Delete
-                  </button>
-                </div>
+        ) : deck ? (
+          <div className="deck-card" style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+            <div style={{ flex: 1, minWidth: 220 }}>
+              <h2 style={{ margin: 0 }}>{deck.name}</h2>
+              <div className="meta" style={{ marginTop: 6 }}>
+                {deck.item_count.toLocaleString()} words with native audio, curated pitch accents and
+                sentence diagrams · {deck.practiced_count} practiced
+                {deck.known_count > 0 && <> · filtered set: {deck.known_count} studied in your Anki</>}
               </div>
-            ))}
+              <p className="hint" style={{ marginTop: 8, marginBottom: 0 }}>
+                Shadow each word and its sentence, and get scored on how closely your pitch tracks the
+                native speaker's.
+              </p>
+            </div>
+            <button className="success" onClick={() => navigate(`/deck/${deck.id}`)}>
+              Open deck
+            </button>
           </div>
+        ) : (
+          <p className="hint">
+            The built-in Kaishi 1.5k deck hasn't been imported yet — restart the server and check its
+            logs (it seeds itself from <code>resources/Kaishi 1.5k.apkg</code> on startup).
+          </p>
         )}
+      </div>
 
-        <div
-          className={`upload-zone${drag ? " drag" : ""}`}
-          style={{ marginTop: 16 }}
-          onClick={() => !uploading && fileRef.current?.click()}
-          onDragOver={(e) => {
-            e.preventDefault();
-            setDrag(true);
-          }}
-          onDragLeave={() => setDrag(false)}
-          onDrop={(e) => {
-            e.preventDefault();
-            setDrag(false);
-            const f = e.dataTransfer.files[0];
-            if (f && !uploading) upload(f);
-          }}
-        >
-          {uploading ? (
-            <span>
-              <span className="spin" /> {uploadMsg}
-            </span>
-          ) : (
-            <>
-              <b>Drop an .apkg here</b> or click to choose
-              <div className="hint" style={{ marginTop: 4 }}>
-                Export from Anki with “Include media” checked. Large decks take a minute.
-              </div>
-              {uploadMsg && <div className="hint" style={{ marginTop: 8, color: "var(--ink)" }}>{uploadMsg}</div>}
-            </>
-          )}
+      {deck && (
+        <div className="panel">
+          <h2>Already partway through Kaishi in Anki?</h2>
+          <p className="hint" style={{ marginTop: 6 }}>
+            Upload your own Kaishi 1.5k export and Accentier will mark the words you've already studied,
+            so you can shadow just those instead of all 1,500. In Anki: deck options → Export →
+            file type <b>.apkg</b>, with <b>“Include scheduling information”</b> checked (media is not
+            needed).
+          </p>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 10, flexWrap: "wrap" }}>
+            <button onClick={() => !syncing && fileRef.current?.click()} disabled={syncing}>
+              {syncing ? "Syncing…" : deck.known_count > 0 ? "Re-sync Anki progress" : "Sync Anki progress"}
+            </button>
+            {deck.known_count > 0 && (
+              <button className="ghost" onClick={clearProgress} disabled={syncing}>
+                Clear ({deck.known_count} words)
+              </button>
+            )}
+            {syncMsg && <span className="hint" style={{ color: "var(--ink)" }}>{syncMsg}</span>}
+          </div>
           <input
             ref={fileRef}
             type="file"
             accept=".apkg"
             hidden
-            onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])}
+            onChange={(e) => {
+              if (e.target.files?.[0]) syncProgress(e.target.files[0]);
+              e.target.value = "";
+            }}
           />
         </div>
-      </div>
+      )}
     </div>
   );
 }

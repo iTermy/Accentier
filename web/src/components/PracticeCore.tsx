@@ -8,7 +8,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, AttemptResult, ItemDetail, api, mediaUrl } from "../api";
 import { Recorder } from "../recorder";
 import ContourChart, { Selection } from "./ContourChart";
-import { SentencePitchDiagram, WordPitchDiagram } from "./PitchDiagram";
+import { SentencePhraseDiagram, SentencePitchDiagram, WordPitchDiagram } from "./PitchDiagram";
 import ScoreRing from "./ScoreRing";
 
 type Phase = "idle" | "recording" | "analyzing";
@@ -280,6 +280,9 @@ export default function PracticeCore({
             {item.deck_name}
           </span>
         </div>
+        {item.word_meaning && (
+          <div className="hint" style={{ marginTop: 4 }}>{item.word_meaning}</div>
+        )}
         {item.sentence && (
           <div className="sentence-line jp">
             {item.sentence.split(item.expression).map((part, i, arr) => (
@@ -290,22 +293,40 @@ export default function PracticeCore({
             ))}
           </div>
         )}
+        {item.sentence_meaning && (
+          <div className="hint" style={{ marginTop: 2 }}>{item.sentence_meaning}</div>
+        )}
+        {item.pitch_notes && (
+          <div className="hint" style={{ marginTop: 8, color: "var(--ink-2)" }}>
+            📌 {item.pitch_notes}
+          </div>
+        )}
 
         {accent?.pattern && (
           <div style={{ marginTop: 14 }}>
             <WordPitchDiagram accent={accent} />
           </div>
         )}
+        {mode === "sentence" && accent?.sentence_phrases && accent.sentence_phrases.length > 0 && (
+          <div style={{ marginTop: 14 }}>
+            <div className="hint" style={{ marginBottom: 6 }}>Sentence melody</div>
+            <SentencePhraseDiagram phrases={accent.sentence_phrases} />
+            <p className="hint" style={{ marginTop: 6, opacity: 0.8 }}>
+              Generated from per-word accents with phrase merging and downstep — each accented phrase
+              starts a little lower than the last. Approximate; the native audio is the ground truth.
+            </p>
+          </div>
+        )}
         {mode === "sentence" && accent?.sentence_words && accent.sentence_words.some((w) => w.pattern) && (
           <details style={{ marginTop: 12 }}>
             <summary className="hint" style={{ cursor: "pointer" }}>
-              Word-by-word accent patterns
+              Word-by-word citation patterns
             </summary>
             <div style={{ marginTop: 10 }}>
               <SentencePitchDiagram words={accent.sentence_words} />
               <p className="hint" style={{ marginTop: 8 }}>
-                Dictionary pattern per word — connected speech merges accent phrases, so treat this as a
-                guide to where the drops are, not an exact sentence melody.
+                Dictionary pattern per word in isolation — connected speech merges these into the
+                phrases shown above.
               </p>
             </div>
           </details>

@@ -239,6 +239,75 @@ def test_field_matching():
     assert idx["pitch_position"] == 4
 
 
+def test_kaishi_pitch_field_parsing():
+    from app.kaishi_pitch import parse_pitch_field
+
+    BAR = ('<span style="border-color:currentColor;display:block;position:absolute;'
+           'top:0.1em;left:0;right:0;height:0;border-top-width:0.1em;border-top-style:solid;{extra}"></span>')
+    DROP_BAR = BAR.format(extra="right:-0.1em;height:0.4em;border-right-width:0.1em;border-right-style:solid;")
+
+    def wrap(kana, drop=False, pad=False):
+        style = "display:inline-block;position:relative;" + ("padding-right:0.1em;margin-right:0.1em;" if pad else "")
+        return (f'<span style="{style}"><span style="display:inline;">{kana}</span>'
+                + (DROP_BAR if drop else BAR.format(extra="")) + "</span>")
+
+    # heiban: overline continues to the end, no drop tick
+    assert parse_pitch_field("ワ" + wrap("タシ")) == [(["ワ", "タ", "シ"], 0)]
+    # nakadaka with wrapper padding marking the drop
+    assert parse_pitch_field("ア" + wrap("ナ", drop=True, pad=True) + "タ") == [(["ア", "ナ", "タ"], 2)]
+    # drop drawn on the bar only (no wrapper padding)
+    assert parse_pitch_field("イ" + wrap("チ", drop=True)) == [(["イ", "チ"], 2)]
+    # plain-overline variant + long vowel mora
+    assert parse_pitch_field('ベ<span style="text-decoration:overline;">ンキョー</span>') == \
+        [(["ベ", "ン", "キョ", "ー"], 0)]
+    # bare text = heiban
+    assert parse_pitch_field("コ") == [(["コ"], 0)]
+    # nasalized ° marker must not swallow the drop or add a mora
+    assert parse_pitch_field(
+        "ウ" + wrap('コ<span style="color: red;">°</span>', drop=True, pad=True) + "ク"
+    ) == [(["ウ", "コ", "ク"], 2)]
+    # ・-separated alternates, first pattern preferred
+    alts = parse_pitch_field("ヒ" + wrap("ト") + "・ヒ" + wrap("ト", drop=True, pad=True))
+    assert alts == [(["ヒ", "ト"], 0), (["ヒ", "ト"], 2)]
+    # CJK lookalike 二 (U+4E8C) normalizes to katakana ニ
+    assert parse_pitch_field(wrap("二", drop=True, pad=True)) == [(["ニ"], 1)]
+
+
+def test_accent_phrase_grouping():
+    from app.languages.japanese import group_accent_phrases
+
+    words = [
+        {"surface": "水", "moras": ["ミ", "ズ"], "accent": 0, "pos": "名詞"},
+        {"surface": "は", "moras": ["ワ"], "accent": None, "pos": "助詞"},
+        {"surface": "飲み", "moras": ["ノ", "ミ"], "accent": 1, "pos": "動詞"},
+        {"surface": "ます", "moras": ["マ", "ス"], "accent": None, "pos": "助動詞"},
+        {"surface": "。", "moras": [], "accent": None, "pos": "補助記号"},
+    ]
+    ph = group_accent_phrases(words)
+    assert len(ph) == 2
+    assert ph[0]["surface"] == "水は" and ph[0]["accent"] == 0, ph[0]
+    assert ph[0]["pattern"] == [0, 1, 1]
+    assert ph[1]["accent"] == 3, "ます takes the accent: のみま↓す"
+    assert ph[1]["break_after"] is True
+
+    # downstep: an accented phrase lowers the next one's plateau
+    words2 = [
+        {"surface": "猫", "moras": ["ネ", "コ"], "accent": 1, "pos": "名詞"},
+        {"surface": "が", "moras": ["ガ"], "accent": None, "pos": "助詞"},
+        {"surface": "来る", "moras": ["ク", "ル"], "accent": 1, "pos": "動詞"},
+    ]
+    ph2 = group_accent_phrases(words2)
+    assert ph2[0]["surface"] == "猫が" and ph2[0]["accent"] == 1
+    assert ph2[0]["level"] == 0 and ph2[1]["level"] == 1
+
+    # です after an all-heiban phrase becomes accented (みずで↓す)
+    words3 = [
+        {"surface": "水", "moras": ["ミ", "ズ"], "accent": 0, "pos": "名詞"},
+        {"surface": "です", "moras": ["デ", "ス"], "accent": None, "pos": "助動詞"},
+    ]
+    assert group_accent_phrases(words3)[0]["accent"] == 3
+
+
 def test_accent_estimation():
     from app.dsp.yin import yin_f0
     from app.languages.japanese import estimate_accent
@@ -272,5 +341,7 @@ if __name__ == "__main__":
     test_yomitan_pitch_parsing()
     test_srs_rules()
     test_field_matching()
+    test_kaishi_pitch_field_parsing()
+    test_accent_phrase_grouping()
     test_accent_estimation()
     print("ALL UNIT TESTS PASSED")

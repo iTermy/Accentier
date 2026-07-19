@@ -11,6 +11,7 @@ from .db import init_db
 # importing modules registers them
 from .languages import generic, japanese  # noqa: F401
 from .routers import auth_routes, deck_routes, item_routes
+from .seed import ensure_kaishi_deck
 
 app = FastAPI(title="Accentier", version="0.1.0")
 app.add_middleware(
@@ -21,6 +22,10 @@ app.add_middleware(
 )
 
 init_db()
+try:
+    ensure_kaishi_deck()
+except Exception as e:  # a broken resource file shouldn't take the API down
+    print(f"[seed] failed: {e}")
 
 app.include_router(auth_routes.router)
 app.include_router(deck_routes.router)
