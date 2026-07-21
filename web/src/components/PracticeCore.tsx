@@ -311,6 +311,15 @@ export default function PracticeCore({
           <div style={{ marginTop: 14 }}>
             <div className="hint" style={{ marginBottom: 6 }}>Sentence melody</div>
             <SentencePhraseDiagram phrases={accent.sentence_phrases} />
+            {accent.sentence_hints && accent.sentence_hints.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                {accent.sentence_hints.map((h, i) => (
+                  <div key={i} className="hint" style={{ marginTop: 4, color: "var(--ink-2)" }}>
+                    💡 {h}
+                  </div>
+                ))}
+              </div>
+            )}
             <p className="hint" style={{ marginTop: 6, opacity: 0.8 }}>
               Generated from per-word accents with phrase merging and downstep — each accented phrase
               starts a little lower than the last. Approximate; the native audio is the ground truth.

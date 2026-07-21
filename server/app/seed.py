@@ -17,7 +17,7 @@ from .db import get_conn, now, tx
 from .languages.base import get_module
 
 # bump when the importer/accent pipeline changes and items must be rebuilt
-SEED_VERSION = 1
+SEED_VERSION = 2  # v2: unidic-rule sentence accents, curated-accent tier, hints
 
 DECK_NAME = "Kaishi 1.5k"
 LANGUAGE = "ja"
@@ -52,6 +52,8 @@ def ensure_kaishi_deck() -> None:
     parsed, archive = parse_apkg(KAISHI_APKG, DECK_NAME)
     try:
         module = get_module(LANGUAGE)
+        if hasattr(module, "prime_deck"):
+            module.prime_deck(parsed.notes)
 
         if deck_id is None:
             with tx() as conn:

@@ -96,6 +96,7 @@ export interface AccentData {
   category?: string;
   sentence_words?: WordAccent[];
   sentence_phrases?: AccentPhrase[];
+  sentence_hints?: string[];
 }
 
 export interface ItemSummary {

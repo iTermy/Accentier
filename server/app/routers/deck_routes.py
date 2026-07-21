@@ -75,6 +75,7 @@ def deck_items(deck_id: int, user: dict = auth.CurrentUser):
         if acc:
             acc.pop("sentence_words", None)
             acc.pop("sentence_phrases", None)
+            acc.pop("sentence_hints", None)
         d["known"] = bool(d["known"])
         items.append(d)
     return {"deck": dict(deck), "items": items}

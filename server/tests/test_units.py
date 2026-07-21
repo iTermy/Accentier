@@ -332,6 +332,88 @@ def test_accent_estimation():
     assert est2 == 0, est2
 
 
+def test_sentence_accent_battery():
+    """Composed forms with known-correct Tokyo accents, end to end through
+    tokenization → fusion → accent-phrase rules. The expected value is the
+    LAST phrase's fall position (0 = flat). Rules documented in
+    docs/ja_sentence_pitch_accent.md."""
+    from app.languages.japanese import (
+        fuse_dictionary_runs, group_accent_phrases, tokenize_sentence,
+    )
+
+    cases = [
+        # copula
+        ("水です", 3), ("雨です", 1), ("水でした", 3), ("水だ", 0),
+        ("水だった", 3), ("雨だった", 1), ("水でしょう", 4), ("静かです", 1),
+        # ます
+        ("行きます", 3), ("食べます", 3), ("行きました", 3), ("行きません", 4),
+        ("行きましょう", 4), ("飲みます", 3),
+        # て/た (ichidan retract, godan keep, no odaka after flat hosts)
+        ("食べた", 1), ("食べて", 1), ("買った", 0), ("分かった", 2),
+        ("帰って", 1), ("思った", 2), ("泳いで", 2), ("読んだ", 1),
+        ("見て", 1), ("起きて", 1), ("調べて", 2),
+        # ない family
+        ("食べない", 2), ("買わない", 0), ("走らない", 3),
+        ("買わなかった", 3), ("見なかった", 1), ("行かず", 2),
+        # たい
+        ("食べたい", 3), ("買いたい", 3), ("行きたくない", 3),
+        # adjectives
+        ("高くない", 2), ("高かった", 2), ("赤かった", 2), ("おいしかった", 3),
+        ("高くて", 2), ("よかった", 1),
+        # ば / volitional
+        ("言えば", 2), ("読めば", 1), ("行こう", 2), ("食べよう", 3),
+        # passive/causative
+        ("言われた", 0), ("見られた", 2), ("食べさせた", 3),
+        # copular negation, そう
+        ("学生じゃない", 6), ("元気そう", 4), ("おいしそう", 4),
+        # particles
+        ("駅まで", 1), ("水まで", 3), ("山の", 0), ("日本の", 0),
+        ("猫の", 1), ("犬の", 0), ("山が", 2), ("犬などが", 2),
+        # ている / ください
+        ("食べている", 1), ("買っている", 0), ("食べています", 5),
+        ("見ています", 4), ("待ってください", 1), ("行ってください", 6),
+        # サ変 (noun accent survives ます)
+        ("勉強します", 6), ("勉強しています", 8),
+        # counters
+        ("一つ", 2),
+    ]
+    for text, want in cases:
+        phrases = group_accent_phrases(fuse_dictionary_runs(tokenize_sentence(text)))
+        assert phrases, text
+        got = phrases[-1]["accent"]
+        assert got == want, f"{text}: want {want}, got {got} ({''.join(phrases[-1]['moras'])})"
+
+
+def test_sentence_hints():
+    from types import SimpleNamespace
+
+    from app.languages.base import get_module
+
+    module = get_module("ja")
+    note = SimpleNamespace(
+        expression="見る", reading="みる", sentence="兄は毎日テレビを見ます。",
+        pitch_html="", pitch_position=1, pitch_categories="",
+        sentence_furigana="兄[あに]は毎日[まいにち]テレビを見[み]ます。",
+    )
+    acc = module.build_accent_data(note)
+    phrases = acc["sentence_phrases"]
+    assert phrases[-1]["accent"] == 2, phrases[-1]   # ミマ↓ス
+    hints = acc.get("sentence_hints") or []
+    assert any("ます" in h for h in hints), hints
+    # events are internal — never serialized
+    assert all("events" not in p for p in phrases)
+    assert all("feat" not in w for w in acc["sentence_words"])
+
+    # flat noun + です: hint explains the fall belongs to です
+    note2 = SimpleNamespace(
+        expression="水", reading="みず", sentence="これは水です。",
+        pitch_html="", pitch_position=0, pitch_categories="", sentence_furigana="",
+    )
+    acc2 = module.build_accent_data(note2)
+    assert acc2["sentence_phrases"][-1]["accent"] == 3   # ミズデ↓ス
+    assert any("です" in h for h in acc2.get("sentence_hints") or []), acc2.get("sentence_hints")
+
+
 if __name__ == "__main__":
     test_yin_and_repair()
     test_smoothing_bridges_short_gaps_only()
@@ -344,4 +426,6 @@ if __name__ == "__main__":
     test_kaishi_pitch_field_parsing()
     test_accent_phrase_grouping()
     test_accent_estimation()
+    test_sentence_accent_battery()
+    test_sentence_hints()
     print("ALL UNIT TESTS PASSED")
